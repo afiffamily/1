@@ -40,7 +40,7 @@ from services.ai import (
     safe_update_history, get_gpt_reply,
     speech_to_text_smart, text_to_speech_smart,
     get_vision_reply, extract_text_from_document,
-    clear_chat_history, get_youtube_summary, safe_get_chat_history,
+    clear_chat_history, safe_get_chat_history,
     build_rich_markdown,
 )
 
@@ -907,8 +907,6 @@ def _greeting_text(*, premium: bool) -> str:
         f"Quyidagilarni qila olaman:\n"
         f"➤ Savollaringizga javob beraman "
         f"(Internetdan ham qidiraman {e('search', '🌐')})\n"
-        f"➤ {e('youtube', '📺')} <b>YouTube</b> video silkasini tashlasangiz, "
-        f"uni qisqacha xulosa qilib beraman!\n"
         f"➤ {e('file', '📄')} <b>Hujjatlar (PDF/Word/Excel/TXT)</b> yuborsangiz, "
         f"o'qib tahlil qilaman!\n"
         f"➤ {e('photo', '📸')} <b>Rasm</b> yuborsangiz — uni xuddi insondek "
@@ -976,7 +974,7 @@ async def handle_start(message: Message, state: FSMContext, command: CommandObje
 
 
 # --------------------------------------------------
-# 2. TEXT HANDLER (YouTube + Web Search)
+# 2. TEXT HANDLER (Web Search)
 # --------------------------------------------------
 # --------------------------------------------------
 # YUBORILGAN FAYLNI ESLAB QOLISH
@@ -1179,26 +1177,15 @@ async def _process_merged_text(chat_id: int, buf: dict, state: FSMContext):
     await state.set_state(GeneratingState.generating)
 
     try:
-        youtube_match = re.search(
-            r'(?:https?:\/\/)?(?:www\.)?(?:youtube\.com\/(?:[^\/\n\s]+\/\S+\/'
-            r'|(?:v|e(?:mbed)?)\/|\S*?[?&]v=)|youtu\.be\/)([a-zA-Z0-9_-]{11})',
-            merged_text
-        )
-
-        if youtube_match:
-            video_id = youtube_match.group(1)
-            user_prompt = merged_text.replace(youtube_match.group(0), "").strip()
-            stream_gen = get_youtube_summary(chat_id, video_id, user_prompt)
-            yt_reply = await process_stream_draft(last_message, stream_gen)
-            if yt_reply:
-                notify_watchers(user_id, last_message.from_user.username, "out", text=yt_reply)
-                try:
-                    await safe_update_history(chat_id, merged_text, role="user")
-                    await safe_update_history(chat_id, yt_reply, role="assistant")
-                except Exception as e:
-                    logger.warning(f"[Tarix saqlash xatosi - YouTube] chat={chat_id}: {e}")
-            return
-
+        # ⚠️ YOUTUBE XULOSASI OLIB TASHLANDI (ataylab, tiklamang).
+        # Bu yerda youtube.com havolasini ushlab, subtitrlarni yuklaydigan
+        # alohida yo'l bor edi. YouTube bulut provayderlarining IP'larini
+        # bloklaydi (RequestBlocked), ya'ni kod mahalliy kompyuterda
+        # ishlab, serverda HAR SAFAR yiqilardi. Uni faqat pullik
+        # residential proksi tiklaydi. Ishlamaydigan va'da ishlamaydigan
+        # funksiyadan yomonroq bo'lgani uchun /start ro'yxatidan ham
+        # olib tashlandi. Qaytarish kerak bo'lsa: proksi oling, keyin
+        # youtube-transcript-api'ni requirements'ga qaytaring.
         # ══════════════════════════════════════════════════════════════
         # MUHIM TUZATISH (kontekst/xotira yo'qolish bug'i):
         #

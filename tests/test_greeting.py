@@ -53,7 +53,7 @@ def test_plain_variant():
     # chorasidan farqi, u hamma tegni yechib tashlaydi.
     assert "<b>" in z and z.count("<b>") == z.count("</b>")
     # Ikkala variant ham bir xil ma'noni tashisin.
-    for parcha in ("Keling tanishib olaylik", "YouTube", "/new", "Boshladikmi"):
+    for parcha in ("Keling tanishib olaylik", "Hujjatlar", "/new", "Boshladikmi"):
         assert parcha in z and parcha in _greeting_text(premium=True), parcha
     print("[4] zaxira variant to'liq va tegsiz OK")
 

@@ -32,19 +32,8 @@ if _missing_env_vars:
 
 TIMEZONE = ZoneInfo("Asia/Tashkent")
 
-# ── YOUTUBE SUBTITRLARI UCHUN PROKSI (ixtiyoriy) ────────────────────
-# YouTube bulut provayderlarining (Railway, AWS, GCP...) IP'larini
-# bloklaydi. Shu sababli subtitr olish MAHALLIY kompyuterda mukammal
-# ishlaydi va serverda HAR SAFAR yiqiladi — kodda xato yo'q, bu tarmoq
-# darajasidagi cheklov va uni faqat proksi hal qiladi.
-#
-# Format: http://foydalanuvchi:parol@host:port (Webshare kabi xizmatlar
-# aynan shunday havola beradi). Bo'sh qoldirilsa bot subtitr o'rniga
-# foydalanuvchiga HAQIQIY sababni aytadi — jim qolmaydi.
-YOUTUBE_PROXY_URL: Optional[str] = os.getenv("YOUTUBE_PROXY_URL")
 
-
-GPT_MODEL: str = "gpt-5.6-luna"      
+GPT_MODEL: str = "gpt-5.6-luna"
 GPT_MODEL_PRO: str = "gpt-5.6-luna"  
 GPT_MODEL_DISPLAY_NAME: str = "GPT-5.6 Luna"
 GPT_KNOWLEDGE_CUTOFF: str = "June 2024"
@@ -673,7 +662,6 @@ CUSTOM_EMOJI: dict[str, str] = {
     # /start salomlashuvi uchun.
     "wave":     "5472055112702629499",   # 👋
     "bot":      "5192883106046059669",   # 🤖
-    "youtube":  "5820934185170242766",   # 📺
     "file":     "5334882760735598374",   # 📄
     "tools":    "5818955300463447293",   # 🛠 ("document" bilan bir xil ID
                                          #     — nomi to'g'risi shu)

@@ -1,8 +1,8 @@
 # ⚠️ VERSIYALAR ATAYLAB QADALGAN (==). Ilgari bu yerda faqat nomlar turardi
 # va har deploy eng yangi versiyani olib kelardi. Aynan shu tufayli
-# youtube-transcript-api 1.0 ga sakraganda `get_transcript()` yo'qolib,
-# YouTube xulosasi jimgina butunlay ishlamay qoldi — hech qanday xato
-# ko'rinmadi, foydalanuvchi doim "subtitrlari yo'q" javobini oldi.
+# youtube-transcript-api 1.0 ga sakraganda chaqirilayotgan metod yo'qolib,
+# butun bir imkoniyat jimgina ishlamay qoldi — hech qanday xato
+# ko'rinmadi, foydalanuvchi esa noto'g'ri javob olib turdi.
 # Versiyani ko'tarish = ataylab qilinadigan qadam, tasodif emas.
 #
 # ⚠️ VERSIYA TANLASHDA QOIDA: Railway **Python 3.13** da quradi, mahalliy
@@ -28,7 +28,6 @@ SpeechRecognition==3.16.1
 
 # ── Kontent manbalari ───────────────────────────────────────────────
 PyMuPDF==1.27.2.3
-youtube-transcript-api==1.2.4   # 1.x API: api.fetch() / api.list()
 ddgs==9.14.2
 python-docx==1.2.0
 
