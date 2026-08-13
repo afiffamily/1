@@ -962,15 +962,26 @@ async def handle_start(message: Message, state: FSMContext, command: CommandObje
     except Exception:
         pass
 
+    # Salomlashuv ostidagi tugma imkoniyatlar ekranini ochadi. Ro'yxatni
+    # o'qigan odam odatda "xo'sh, endi nima yozay?" degan joyda to'xtaydi —
+    # tugma aynan shu bo'shliqni yopadi va tayyor misollarga olib boradi.
+    from handlers.capabilities import menu_button      # ⚠️ tsiklik import
+    kb = InlineKeyboardMarkup(inline_keyboard=[[menu_button()]])
+
     try:
-        await message.answer(_greeting_text(premium=True))
+        await message.answer(_greeting_text(premium=True), reply_markup=kb)
     except TelegramBadRequest as exc:
         # Premium emoji Telegram tomonidan rad etilsa BUTUN xabar
         # yuborilmaydi va yangi foydalanuvchi hech narsa ko'rmaydi — bu
         # botdagi eng yomon nosozlik. Shuning uchun oddiy emojili
         # variantga tushamiz (qalin matn saqlanadi).
         logger.warning(f"[/start] premium emoji rad etildi: {exc}")
-        await message.answer(_greeting_text(premium=False))
+        try:
+            await message.answer(_greeting_text(premium=False), reply_markup=kb)
+        except TelegramBadRequest:
+            # Tugma ham rad etilsa (masalan `style` maydonini bilmaydigan
+            # eski mijoz) — salomlashuvning O'ZI baribir yetib borsin.
+            await message.answer(_greeting_text(premium=False))
 
 
 # --------------------------------------------------

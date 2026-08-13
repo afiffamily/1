@@ -14,6 +14,7 @@ from handlers.messages import (
     router as generating_state_router,
 )
 from handlers.callbacks import handle_retry_callback
+from handlers import capabilities
 from db.history import init_db
 from core.memory import start_cleanup_task
 from aiogram.filters import Command
@@ -96,6 +97,11 @@ async def main():
 
     general_router.message.register(handle_start, CommandStart())
     general_router.message.register(handle_profile, Command("profile"))
+    # /help — /profile bilan bir xil mantiq: faqat o'qiydi, hech narsa
+    # sarflamaydi, shuning uchun texnik ta'til darvozasidan OLDIN turadi.
+    # Ta'til paytida ham "bot nima qila oladi" savoliga javob bo'lgani
+    # yaxshi.
+    general_router.message.register(capabilities.handle_help, Command("help"))
     # Texnik ta'til yoqilganda AI javob handlerlaridan OLDIN ishga tushishi shart —
     # aks holda oddiy foydalanuvchi xabari baribir GPT'ga yuborilib ketadi.
     general_router.message.register(
@@ -115,6 +121,16 @@ async def main():
     general_router.message.register(handle_photo, F.photo, non_admin_predicate)
     general_router.message.register(handle_document, F.document, non_admin_predicate)
     general_router.message.register(handle_voice, F.voice, non_admin_predicate)
+    # ⚠️ ENG OXIRIDA: bu handler qo'llab-quvvatlanmagan turlarni (video,
+    # stiker, audio...) ushlaydi va u YUQORIDAGILARDAN KEYIN turishi shart —
+    # aks holda o'zi ushlaydigan turlar ro'yxati kengayib ketsa, oddiy
+    # rasm/hujjat oqimini bosib qolishi mumkin.
+    general_router.message.register(
+        capabilities.handle_unsupported,
+        F.video | F.video_note | F.animation | F.audio | F.sticker
+        | F.location | F.contact | F.poll,
+        non_admin_predicate,
+    )
     dp.include_router(guest_router)
     # GeneratingState uchun spam-guard (busy_handler) ODDIY handlerlardan
     # OLDIN ro'yxatdan o'tishi SHART — aks holda javob kutilayotganda
@@ -128,6 +144,8 @@ async def main():
                                lambda q: q.data and q.data.startswith("pro:"))
     dp.callback_query.register(digest_module.handle_digest_callback,
                                lambda q: q.data and q.data.startswith("dg:"))
+    dp.callback_query.register(capabilities.handle_capabilities_callback,
+                               lambda q: q.data and q.data.startswith("cap:"))
     # Ulashish uchun inline rejim (@BotFather /setinline). Yoqilmagan bo'lsa
     # bu handlerga hech qachon update kelmaydi — zarari yo'q.
     dp.inline_query.register(pro_module.handle_inline_share)
