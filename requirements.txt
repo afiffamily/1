@@ -4,13 +4,21 @@
 # YouTube xulosasi jimgina butunlay ishlamay qoldi — hech qanday xato
 # ko'rinmadi, foydalanuvchi doim "subtitrlari yo'q" javobini oldi.
 # Versiyani ko'tarish = ataylab qilinadigan qadam, tasodif emas.
+#
+# ⚠️ VERSIYA TANLASHDA QOIDA: Railway **Python 3.13** da quradi, mahalliy
+# muhit esa 3.11. Ya'ni har bir qadalgan versiyada cp313 g'ildiragi (yoki
+# universal `none-any`) BO'LISHI SHART. Bo'lmasa pip manbadan qurishga
+# tushadi va deploy `metadata-generation-failed` bilan yiqiladi —
+# `pandas 2.2.2` aynan shunday yiqilgan (cp313 g'ildiragi faqat 2.2.3 dan).
+# Yangi versiya qadashdan oldin tekshiring:
+#   https://pypi.org/pypi/<paket>/<versiya>/json -> urls[].filename
 
 # ── Bot va API ──────────────────────────────────────────────────────
 aiogram==3.29.0            # Guest Mode (guest_message) uchun >= 3.29 shart
 openai==2.44.0
 pydantic==2.11.10
 python-dotenv==1.0.1
-aiohttp==3.9.5
+aiohttp==3.10.11           # 3.9.5 da cp313 g'ildiragi yo'q
 asyncpg==0.30.0
 
 # ── Ovoz ────────────────────────────────────────────────────────────
@@ -31,7 +39,7 @@ openpyxl==3.1.5
 xlrd==2.0.2
 xlwt==1.3.0
 xlutils==2.0.0
-pandas==2.2.2
+pandas==2.2.3              # 2.2.2 da cp313 g'ildiragi yo'q — deploy yiqilgan
 python-pptx==1.0.2
 reportlab==5.0.0
 pypdf==6.14.2
