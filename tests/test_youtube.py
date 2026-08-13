@@ -71,6 +71,9 @@ async def main():
     seen = {}
 
     class FakeApi:
+        def __init__(self, proxy_config=None, http_client=None):
+            self.proxy_config = proxy_config
+
         def fetch(self, video_id, languages=("en",)):
             seen["fetch"] = (video_id, tuple(languages))
             return FakeFetched([{"text": "salom"}, {"text": "dunyo"}])
@@ -98,8 +101,15 @@ async def main():
 
         # ── 4) Kerakli til yo'q -> zaxira ro'yxatdan olinadi ───────
         class FallbackApi:
+            # Haqiqiy kod YouTubeTranscriptApi(proxy_config=...) deb chaqiradi.
+            def __init__(self, proxy_config=None, http_client=None):
+                self.proxy_config = proxy_config
+
             def fetch(self, video_id, languages=("en",)):
-                raise RuntimeError("NoTranscriptFound")
+                # Haqiqiy sinf: kod endi xato TURIGA qarab qaror qiladi,
+                # shuning uchun oddiy RuntimeError bu yo'lni sinamaydi.
+                from youtube_transcript_api import NoTranscriptFound
+                raise NoTranscriptFound(video_id, languages, None)
 
             def list(self, video_id):
                 class T:
@@ -115,22 +125,80 @@ async def main():
         print("[4] kerakli til topilmasa zaxira subtitr ishlatildi OK")
 
         # ── 5) Subtitr umuman yo'q -> tushunarli xabar, xato emas ──
+        from youtube_transcript_api import (
+            TranscriptsDisabled, RequestBlocked, VideoUnavailable)
+
         class EmptyApi:
+            # Haqiqiy kod YouTubeTranscriptApi(proxy_config=...) deb chaqiradi.
+            def __init__(self, proxy_config=None, http_client=None):
+                self.proxy_config = proxy_config
+
             def fetch(self, video_id, languages=("en",)):
-                raise RuntimeError("TranscriptsDisabled")
+                raise TranscriptsDisabled(video_id)
 
             def list(self, video_id):
-                raise RuntimeError("TranscriptsDisabled")
+                raise TranscriptsDisabled(video_id)
 
         yta.YouTubeTranscriptApi = EmptyApi
         out = await collect(services.get_youtube_summary(1, "abc12345678"))
-        assert len(out) == 1 and "subtitrlar" in out[0].lower(), out
+        assert len(out) == 1 and "subtitr" in out[0].lower(), out
         print("[5] subtitrsiz videoda tushunarli xabar qaytdi OK")
+
+        # ═══════════════════════════════════════════════════════════
+        # 6) IP BLOKI "subtitr yo'q" deb ATALMASLIGI kerak
+        # ═══════════════════════════════════════════════════════════
+        # Railway'dagi haqiqiy nosozlik shu edi: 35 ta subtitr izi bor
+        # video uchun ham "subtitrlari yo'q" chiqardi, chunki hamma xato
+        # bitta xabarga yig'ilgan edi. Foydalanuvchi videoni ayblab,
+        # boshqasini yubordi va yana o'shani ko'rdi.
+        class BlockedApi:
+            # Haqiqiy kod YouTubeTranscriptApi(proxy_config=...) deb chaqiradi.
+            def __init__(self, proxy_config=None, http_client=None):
+                self.proxy_config = proxy_config
+
+            def fetch(self, video_id, languages=("en",)):
+                raise RequestBlocked(video_id)
+
+            def list(self, video_id):
+                raise RequestBlocked(video_id)
+
+        yta.YouTubeTranscriptApi = BlockedApi
+        out = await collect(services.get_youtube_summary(1, "abc12345678"))
+        assert len(out) == 1, out
+        msg = out[0].lower()
+        assert "subtitrlar yo'q" not in msg, (
+            f"KRITIK: IP bloki 'subtitr yo'q' deb ko'rsatildi — foydalanuvchi "
+            f"aybni videodan qidiradi: {out[0]!r}")
+        assert "server" in msg or "blok" in msg, out[0]
+        print("[6] IP bloki alohida, rost xabar bilan ajratildi OK")
+
+        # ── 7) Video ochilmasa — uchinchi xil xabar ────────────────
+        class GoneApi:
+            # Haqiqiy kod YouTubeTranscriptApi(proxy_config=...) deb chaqiradi.
+            def __init__(self, proxy_config=None, http_client=None):
+                self.proxy_config = proxy_config
+
+            def fetch(self, video_id, languages=("en",)):
+                raise VideoUnavailable(video_id)
+
+            def list(self, video_id):
+                raise VideoUnavailable(video_id)
+
+        yta.YouTubeTranscriptApi = GoneApi
+        out = await collect(services.get_youtube_summary(1, "abc12345678"))
+        assert "video" in out[0].lower(), out
+        assert out[0] != services._YT_PROBLEM_TEXTS["yoq"], "xabarlar farqlanishi kerak"
+        print("[7] ochilmagan video alohida xabar oldi OK")
+
+        # ── 8) Uchala sabab uchun uch xil matn ────────────────────
+        texts = [services._YT_PROBLEM_TEXTS[k] for k in ("blocked", "yoq", "unavailable")]
+        assert len(set(texts)) == 3, "har bir sabab o'z matniga ega bo'lishi kerak"
+        print("[8] har bir sabab uchun alohida matn bor OK")
     finally:
         yta.YouTubeTranscriptApi = real_api
         services.get_gpt_reply = real_gpt
 
-    print("\nyoutube: barcha tekshiruvlar o'tdi (5/5).")
+    print("\nyoutube: barcha tekshiruvlar o'tdi (8/8).")
 
 
 if __name__ == "__main__":

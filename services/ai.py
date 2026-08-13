@@ -30,6 +30,7 @@ try:
         OPENAI_API_KEY,
         REQUEST_TIMEOUT, CONCISE_INSTRUCTION, STRICT_MATH_RULES,
         build_system_prompt, build_request_params, pick_reasoning_effort,
+        YOUTUBE_PROXY_URL,
     )
 except ImportError:
     import os
@@ -41,6 +42,7 @@ except ImportError:
     REQUEST_TIMEOUT = 60.0
     CONTEXT_WINDOW = 12
     CONTEXT_WINDOW_PRO = 24
+    YOUTUBE_PROXY_URL = os.getenv("YOUTUBE_PROXY_URL")
 
     def build_system_prompt() -> str:
         return "You are a helpful assistant."
@@ -200,43 +202,105 @@ def build_rich_markdown(text: str) -> str:
 # YOUTUBE SUMMARY
 # ─────────────────────────────────────────────────────────────
 
+# Subtitr olishda nima yuz berganini foydalanuvchiga TO'G'RI aytish uchun
+# sabab turlari. Ilgari hamma xato bitta "subtitrlari yo'q" xabariga
+# yig'ilardi — bu YOLG'ON edi: 35 ta subtitr izi bor videoda ham shu
+# xabar chiqardi, chunki asl sabab boshqa (IP bloki) edi.
+_YT_PROBLEM_TEXTS = {
+    "blocked": (
+        "🚫 YouTube hozir serverimizdan subtitr so'rovlarini qabul qilmayapti "
+        "(bulut IP'lari bloklangan). Bu videoga bog'liq emas.\n\n"
+        "Iltimos, keyinroq urinib ko'ring yoki video matnini shu yerga "
+        "nusxalab tashlang — men uni bemalol tahlil qilaman."
+    ),
+    "yoq": (
+        "📭 Bu videoda ochiq subtitrlar yo'q (yoki ular o'chirilgan). "
+        "Subtitri bor boshqa video yuboring."
+    ),
+    "unavailable": (
+        "🔒 Video ochilmadi — u yopiq, o'chirilgan yoki yosh cheklovi bor "
+        "bo'lishi mumkin. Havolani tekshirib ko'ring."
+    ),
+    "xato": (
+        "⚠️ Videoni o'qishda kutilmagan xatolik yuz berdi. "
+        "Birozdan keyin qayta urinib ko'ring."
+    ),
+}
+
+
 async def get_youtube_summary(chat_id: int, video_id: str, user_prompt: str = ""):
     def _fetch_transcript():
-        """Subtitrlarni [{'text': ...}, ...] ko'rinishida qaytaradi.
+        """(subtitr_qatorlari, muammo_turi) qaytaradi. Muammo bo'lmasa turi None.
 
         ⚠️ youtube-transcript-api 1.0 dan boshlab `YouTubeTranscriptApi`
         STATIK emas, ODDIY sinf: `get_transcript()` va `list_transcripts()`
         BUTUNLAY olib tashlangan, o'rniga `api.fetch()` va `api.list()`.
-        Eski kod shu sababli har doim AttributeError berib, bare `except`
-        ichida yutilardi va foydalanuvchi doim "subtitrlari yo'q" javobini
-        olardi — ya'ni YouTube xulosasi umuman ishlamayotgan edi.
-        Versiya requirements.txt da qadab qo'yilgan, aks holda keyingi
-        deploy buni jimgina qaytarib keladi.
-        """
-        from youtube_transcript_api import YouTubeTranscriptApi
+        Versiya requirements.txt da qadab qo'yilgan.
 
-        api = YouTubeTranscriptApi()
+        ⚠️ IKKINCHI, ALOHIDA MUAMMO: YouTube bulut provayderlarining
+        IP'larini bloklaydi. Kod mahalliy kompyuterda mukammal ishlaydi va
+        aynan o'sha kod Railway'da HAR SAFAR yiqiladi. Buni faqat proksi
+        hal qiladi — YOUTUBE_PROXY_URL o'rnatilsa, kutubxona so'rovni o'sha
+        orqali yuboradi (Webshare kabi xizmatning `http://user:pass@host:port`
+        havolasi to'g'ridan-to'g'ri tushadi). O'rnatilmagan bo'lsa
+        foydalanuvchi hech bo'lmasa HAQIQIY sababni biladi.
+        """
+        from youtube_transcript_api import (
+            YouTubeTranscriptApi, RequestBlocked, IpBlocked,
+            TranscriptsDisabled, NoTranscriptFound, VideoUnavailable,
+            InvalidVideoId, VideoUnplayable, AgeRestricted,
+        )
+
+        proxy_config = None
+        if YOUTUBE_PROXY_URL:
+            from youtube_transcript_api.proxies import GenericProxyConfig
+            proxy_config = GenericProxyConfig(
+                http_url=YOUTUBE_PROXY_URL, https_url=YOUTUBE_PROXY_URL)
+
+        api = YouTubeTranscriptApi(proxy_config=proxy_config)
+
+        # Xato turlarini sababga bog'laymiz. Tartib muhim emas — sinflar
+        # bir-biriga kirmaydi.
+        blocked = (RequestBlocked, IpBlocked)
+        missing = (TranscriptsDisabled, NoTranscriptFound)
+        gone = (VideoUnavailable, InvalidVideoId, VideoUnplayable, AgeRestricted)
+
         try:
-            return api.fetch(video_id, languages=['uz', 'ru', 'en']).to_raw_data()
+            return api.fetch(video_id, languages=['uz', 'ru', 'en']).to_raw_data(), None
+        except blocked as e:
+            # ⚠️ WARNING darajasi ATAYLAB: aynan shu xato debug'da yozilgani
+            # uchun production'da ko'rinmay, "subtitrlari yo'q" degan yolg'on
+            # xabar ostida yashirinib yotgan edi.
+            logger.warning(f"[YouTube] IP bloklangan ({video_id}): {type(e).__name__}")
+            return [], "blocked"
+        except gone as e:
+            logger.info(f"[YouTube] video ochilmadi ({video_id}): {type(e).__name__}")
+            return [], "unavailable"
+        except missing:
+            pass          # kerakli til yo'q — pastdagi zaxira yo'lini sinaymiz
         except Exception as e:
-            logger.debug(f"[YouTube] to'g'ridan-to'g'ri olinmadi ({video_id}): {e}")
+            logger.warning(f"[YouTube] kutilmagan xato ({video_id}): {type(e).__name__}: {e}")
+            return [], "xato"
 
         # Zaxira: kerakli til yo'q — mavjud BIRINCHI subtitr (avtomatik
         # yaratilgani yoki boshqa tildagisi) ham xulosa uchun yetadi.
         try:
             for transcript in api.list(video_id):
-                return transcript.fetch().to_raw_data()
+                return transcript.fetch().to_raw_data(), None
+        except blocked as e:
+            logger.warning(f"[YouTube] IP bloklangan ({video_id}): {type(e).__name__}")
+            return [], "blocked"
         except Exception as e:
-            logger.debug(f"[YouTube] subtitrlar ro'yxati olinmadi ({video_id}): {e}")
-        return []
+            logger.info(f"[YouTube] subtitr ro'yxati bo'sh ({video_id}): {type(e).__name__}")
+        return [], "yoq"
 
     try:
-        transcript_data = await asyncio.to_thread(_fetch_transcript)
-        
+        transcript_data, problem = await asyncio.to_thread(_fetch_transcript)
+
         if not transcript_data:
-            yield "Kechirasiz, bu videoning ochiq subtitrlari yo'q ekan (yoki video yopiq/musiqiy). Boshqa video yuborib ko'ring."
+            yield _YT_PROBLEM_TEXTS.get(problem or "yoq", _YT_PROBLEM_TEXTS["yoq"])
             return
-            
+
         full_text = " ".join([t.get('text', '') for t in transcript_data])
         
         if len(full_text) > 15000:
