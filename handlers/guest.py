@@ -182,6 +182,60 @@ async def _run_guest_chat_status_animator(
             pass
 
 
+_QUOTE_MAX_CHARS = 3000
+
+
+def _quoted_context(message: Message) -> str:
+    """Reply qilingan xabar matni — guruhda kimdir savol bergan bo'lsa,
+    o'sha savolga reply qilib botni chaqirish uchun.
+
+    Guest Mode'da bot guruh a'zosi emas va tarixni umuman ko'rmaydi, shuning
+    uchun reply qilingan xabar — botga yetib boradigan YAGONA kontekst.
+    U kelmasligi ham mumkin (Telegram har doim ham yubormaydi), shuning
+    uchun yo'qligi xato emas: shunchaki kontekstsiz ishlayveramiz.
+
+    `message.quote` — foydalanuvchi xabarning bir qismini belgilab olgan
+    holat; aynan o'sha bo'lak butun xabardan aniqroq, shuning uchun ustun.
+    """
+    src = message.reply_to_message
+    if src is None:
+        return ""
+
+    quote = getattr(message, "quote", None)
+    text = (getattr(quote, "text", None) if quote else None) or src.text or src.caption
+    if not text or not text.strip():
+        return ""
+
+    if src.from_user and src.from_user.is_bot:
+        author = "Bot"
+    elif src.from_user:
+        author = src.from_user.full_name
+    else:
+        author = "Kimdir"
+
+    return f'{author} yozgan xabar:\n"""{text.strip()[:_QUOTE_MAX_CHARS]}"""'
+
+
+def _media_source(message: Message) -> Message:
+    """Rasm/hujjat/ovoz QAYSI xabardan olinishini aniqlaydi.
+
+    Guruhdagi eng tabiiy holat: kimdir rasm tashlaydi, boshqasi o'sha
+    rasmga reply qilib "@bot bu nima?" deb so'raydi. Bunda chaqiruv
+    xabarining o'zida media yo'q — u reply qilingan xabarda. Faqat
+    `message`ga qarasak, bot ko'rmagan rasm haqida taxmin qilib javob
+    berardi.
+
+    Chaqiruvchining O'Z medias'i doim ustun: o'zi rasm yuborib, ustiga
+    eski rasmga reply qilgan bo'lsa — savol yangi rasm haqida.
+    """
+    if message.photo or message.document or message.voice:
+        return message
+    src = message.reply_to_message
+    if src is not None and (src.photo or src.document or src.voice):
+        return src
+    return message
+
+
 def _detect_guest_content_type(message: Message) -> str:
     """Guest chaqiruv xabarining content-type'ini aniqlaydi.
 
@@ -503,19 +557,37 @@ else:
             logger.debug(f"Guest: takroriy guest_query_id o'tkazib yuborildi ({guest_query_id})")
             return
 
-        content_type = _detect_guest_content_type(message)
+        # Media chaqiruv xabarida ham, reply qilingan xabarda ham bo'lishi
+        # mumkin. content_type SHU media manbaidan aniqlanadi, shuning uchun
+        # kunlik kvota ham to'g'ri turdagi narx bilan yechiladi: rasmga
+        # reply qilingan savol matn narxida emas, RASM narxida turadi.
+        media_msg = _media_source(message)
+        media_from_reply = media_msg is not message
+        content_type = _detect_guest_content_type(media_msg)
 
         clean_query = await _extract_guest_query(message)
+        quoted = _quoted_context(message)
         if content_type == "text" and len(clean_query) < 2:
-            clean_query = "Salom! Menga qanday yordam bera olasiz, o'zingizni tanishtiring."
+            # Reply qilib faqat "@bot" deb yozilgan — savol reply qilingan
+            # xabarning O'ZIDA. Bunday holatda tanishtiruv matni bilan javob
+            # berish savolni e'tiborsiz qoldirish bo'lardi.
+            clean_query = (
+                "Yuqoridagi xabarga javob ber." if quoted
+                else "Salom! Menga qanday yordam bera olasiz, o'zingizni tanishtiring."
+            )
         elif content_type == "photo" and not clean_query:
             clean_query = "Bu rasmda nimalar borligini to'liq tushuntirib ber."
         elif content_type == "document" and not clean_query:
             clean_query = "Shu hujjatning qisqacha mazmunini yozib ber."
 
+        # Kontekst savolning OLDIGA qo'yiladi — model avval nima haqida
+        # gap ketayotganini, keyin nima so'ralayotganini o'qiydi.
+        if quoted:
+            clean_query = f"{quoted}\n\nFoydalanuvchi so'rovi: {clean_query}"
+
         file_name = "fayl"
-        if content_type == "document" and message.document and message.document.file_name:
-            file_name = message.document.file_name
+        if content_type == "document" and media_msg.document and media_msg.document.file_name:
+            file_name = media_msg.document.file_name
 
         caller_user_id = message.from_user.id if message.from_user else None
         if caller_user_id is not None:
@@ -537,9 +609,12 @@ else:
         # umuman urinib ham ko'rilmaydi — kod to'g'ridan-to'g'ri AnswerGuestQuery
         # (inline, faqat oddiy matn) yo'liga tushadi. Bu log shu holatni aniq
         # tasdiqlaydi/rad etadi.
+        # reply_len — reply qilingan xabar konteksti yetib keldimi. 0 bo'lsa
+        # Telegram uni guest update'ida umuman yubormagan degani.
         logger.info(
             f"[Guest] query_id={guest_query_id} content_type={content_type} "
-            f"caller_chat_id={caller_chat_id!r} chat_type={message.chat.type!r}"
+            f"caller_chat_id={caller_chat_id!r} chat_type={message.chat.type!r} "
+            f"reply_len={len(quoted)}"
         )
 
         skip_ai = False
@@ -573,9 +648,9 @@ else:
                 )
             elif (
                 content_type == "document"
-                and message.document
-                and message.document.file_size
-                and message.document.file_size > DOCUMENT_MAX_SIZE_PRO
+                and media_msg.document
+                and media_msg.document.file_size
+                and media_msg.document.file_size > DOCUMENT_MAX_SIZE_PRO
             ):
                 # Qattiq shift — tarifdan qat'i nazar: Telegram Bot API
                 # bundan kattasini yuklab olishga ruxsat bermaydi.
@@ -602,8 +677,8 @@ else:
                 # Tarif bo'yicha hujjat chegarasi — plan aynan shu kvota
                 # natijasidan keladi, qo'shimcha DB so'rovi kerak emas.
                 _cap = document_max_size(quota.get("plan"))
-                if (content_type == "document" and message.document
-                        and (message.document.file_size or 0) > _cap):
+                if (content_type == "document" and media_msg.document
+                        and (media_msg.document.file_size or 0) > _cap):
                     skip_ai = True
                     forced_text = (
                         f"⚠️ Fayl hajmi {_cap // (1024 * 1024)} MB dan katta."
@@ -731,7 +806,7 @@ else:
                 stream_gen = None
 
                 if content_type == "photo":
-                    photo = message.photo[-1]
+                    photo = media_msg.photo[-1]
                     file = await bot.get_file(photo.file_id)
                     buf = BytesIO()
                     await bot.download_file(file.file_path, buf)
@@ -742,7 +817,7 @@ else:
                                                   tg_name=_guest_name(message))
 
                 elif content_type == "document":
-                    document = message.document
+                    document = media_msg.document
                     file = await bot.get_file(document.file_id)
                     buf = BytesIO()
                     await bot.download_file(file.file_path, buf)
@@ -773,7 +848,7 @@ else:
                                                    tg_name=_guest_name(message))
 
                 elif content_type == "voice":
-                    voice = message.voice
+                    voice = media_msg.voice
                     file = await bot.get_file(voice.file_id)
                     voice_path = f"guest_voice_{voice.file_id}.ogg"
                     await bot.download_file(file.file_path, voice_path)
@@ -783,7 +858,17 @@ else:
                     if not recognized_text:
                         full_text = "🤷‍♂️ Ovozni tushunib bo'lmadi."
                     else:
-                        stream_gen = get_gpt_reply(caller_user_id, recognized_text, is_pro=guest_is_pro,
+                        # Boshqa odamning ovozli xabariga reply qilinganda
+                        # chaqiruvchi matni — ko'rsatma ("tarjima qil",
+                        # "qisqartir"). Uni tashlab yuborsak, bot ovozga
+                        # javob berib, so'ralgan amalni bajarmasdi.
+                        voice_prompt = recognized_text
+                        if media_from_reply and clean_query:
+                            voice_prompt = (
+                                f'Ovozli xabar matni:\n"""{recognized_text}"""\n\n'
+                                f"Foydalanuvchi so'rovi: {clean_query}"
+                            )
+                        stream_gen = get_gpt_reply(caller_user_id, voice_prompt, is_pro=guest_is_pro,
                                                    user_id=caller_user_id,
                                                    tg_name=_guest_name(message))
 
@@ -851,7 +936,9 @@ else:
 
         display_text = raw_answer
         if content_type == "voice" and recognized_text:
-            display_text = f"🗣 *Siz:* \"{recognized_text}\"\n\n{raw_answer}"
+            # Ovoz boshqa odamniki bo'lsa "Siz" deb yozish yolg'on bo'lardi.
+            speaker = "Ovozli xabar" if media_from_reply else "Siz"
+            display_text = f"🗣 *{speaker}:* \"{recognized_text}\"\n\n{raw_answer}"
 
         if len(display_text) > MAX_GUEST_REPLY_LEN:
             display_text = display_text[:MAX_GUEST_REPLY_LEN].rstrip() + "…"
