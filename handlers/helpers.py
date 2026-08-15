@@ -88,33 +88,60 @@ async def process_daily_pin(message) -> None:
 def notify_watchers(user_id: int, username: Optional[str], direction: str, *,
                      text: Optional[str] = None,
                      copy_chat_id: Optional[int] = None,
-                     copy_message_id: Optional[int] = None) -> None:
+                     copy_message_id: Optional[int] = None,
+                     file_id: Optional[str] = None,
+                     file_kind: Optional[str] = None) -> None:
     """
     Agar user_id kuzatuv ro'yxatida bo'lsa, xabarni kuzatuv guruhiga fon
     vazifasi sifatida jo'natadi. Sinxron va deyarli xarajatsiz (bitta
     dict/set qarash) — kuzatilmayotgan foydalanuvchilar uchun hech qanday
     I/O yoki asosiy oqimni kutish yo'q, shuning uchun javob tezligiga
     ta'sir qilmaydi. direction: "in" (foydalanuvchidan) yoki "out" (bot javobi).
+
+    Media uchun IKKI yo'l bor va ular almashtirib bo'lmaydi:
+      copy_chat_id + copy_message_id — bot chat a'zosi bo'lgan holat
+        (shaxsiy chat). Asl xabar aynan nusxalanadi.
+      file_id + file_kind — GUEST rejim. U yerda bot chat a'zosi EMAS va
+        copyMessage "message to copy not found" beradi. file_id esa update
+        bilan birga kelgan, uni qayta yuborish uchun chatga kirish shart emas.
+
+    `text` media bilan BIRGA ham berilishi mumkin — file_id yo'li caption'ni
+    olib kelmaydi, savolning o'zi esa kuzatuvda eng kerakli narsa.
     """
     group_id = database.get_watch_target(user_id)
     if not group_id:
         return
     asyncio.create_task(
-        _send_watch_copy(group_id, user_id, username, direction, text, copy_chat_id, copy_message_id)
+        _send_watch_copy(group_id, user_id, username, direction, text,
+                         copy_chat_id, copy_message_id, file_id, file_kind)
     )
 
 
-async def _send_watch_copy(group_id, user_id, username, direction, text, copy_chat_id, copy_message_id):
+def _file_senders():
+    return {"photo": bot.send_photo, "document": bot.send_document,
+            "voice": bot.send_voice}
+
+
+async def _send_watch_copy(group_id, user_id, username, direction, text,
+                           copy_chat_id, copy_message_id,
+                           file_id=None, file_kind=None):
     who = f"@{username}" if username else f"ID {user_id}"
     label = "📥 Foydalanuvchidan" if direction == "in" else "📤 Bot javobi"
     header = f"👁 <b>Kuzatuv</b> — {html_escape(who)} (<code>{user_id}</code>)\n{label}:"
 
-    if copy_chat_id and copy_message_id:
+    send_file = _file_senders().get(file_kind) if file_id else None
+    media_sent = False
+
+    if send_file is not None or (copy_chat_id and copy_message_id):
         # Rasm/hujjat/ovoz: sarlavha + asl xabar nusxasi.
         try:
             await bot.send_message(group_id, header, parse_mode="HTML")
-            await bot.copy_message(chat_id=group_id, from_chat_id=copy_chat_id,
-                                   message_id=copy_message_id)
+            if send_file is not None:
+                await send_file(group_id, file_id)
+            else:
+                await bot.copy_message(chat_id=group_id, from_chat_id=copy_chat_id,
+                                       message_id=copy_message_id)
+            media_sent = True
         except Exception as e:
             # Nusxa ko'chirish yiqilsa sarlavha ALLAQACHON ketgan bo'ladi —
             # guruhda "bo'sh" xabar osilib qolmasin, sababini yozamiz.
@@ -123,10 +150,12 @@ async def _send_watch_copy(group_id, user_id, username, direction, text, copy_ch
                 await bot.send_message(group_id, f"⚠️ Xabar nusxasi ko'chmadi: {e}")
             except Exception:
                 pass
-        return
-
     if not text:
         return
+
+    # Sarlavha media bilan birga ALLAQACHON ketgan bo'lsa, uni takrorlamaymiz —
+    # aks holda guruhda har media uchun ikkita bir xil sarlavha chiqardi.
+    text_header = "💬 Matn:" if media_sent else header
 
     body = text if len(text) <= 3500 else text[:3500] + "…"
     try:
@@ -134,7 +163,7 @@ async def _send_watch_copy(group_id, user_id, username, direction, text, copy_ch
         # HTML emas. Escape qilinmasa "agar a < b bo'lsa" kabi oddiy savol
         # ham "can't parse entities" beradi va kuzatuv xabari guruhga
         # UMUMAN yetib bormaydi. Telegram API'da tekshirilgan.
-        await bot.send_message(group_id, f"{header}\n{html_escape(body)}",
+        await bot.send_message(group_id, f"{text_header}\n{html_escape(body)}",
                                parse_mode="HTML")
     except Exception as e:
         logger.warning(f"[watch_mirror] {direction} yetkazilmadi (user={user_id}): {e}")
@@ -142,6 +171,7 @@ async def _send_watch_copy(group_id, user_id, username, direction, text, copy_ch
         # bezaksiz xabar yaxshi.
         try:
             await bot.send_message(group_id, f"{who} ({user_id}) — {label}\n{body}")
+
         except Exception as e2:
             logger.warning(f"[watch_mirror] zaxira ham yetkazilmadi: {e2}")
 

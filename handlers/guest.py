@@ -254,6 +254,31 @@ def _media_source(message: Message) -> Message:
     return message
 
 
+def _watch_text(message: Message, quoted: str) -> str:
+    """Kuzatuvchiga ko'rsatiladigan matn: foydalanuvchi AYNAN nima yozgani,
+    plus reply konteksti (uni bilmasdan savolni tushunib bo'lmaydi).
+
+    Modelga ketadigan `clean_query` emas — unda standart ko'rsatmalar
+    ("Bu rasmda nimalar borligini...") aralashadi va kuzatuvchi
+    foydalanuvchi yozmagan matnni o'qigan bo'lardi.
+    """
+    typed = (message.text or message.caption or "").strip()
+    if quoted and typed:
+        return f"{quoted}\n\n{typed}"
+    return quoted or typed
+
+
+def _watch_file(media_msg: Message, content_type: str) -> dict:
+    """Kuzatuv uchun file_id — guest rejimda copyMessage ishlamaydi."""
+    if content_type == "photo" and media_msg.photo:
+        return {"file_id": media_msg.photo[-1].file_id, "file_kind": "photo"}
+    if content_type == "document" and media_msg.document:
+        return {"file_id": media_msg.document.file_id, "file_kind": "document"}
+    if content_type == "voice" and media_msg.voice:
+        return {"file_id": media_msg.voice.file_id, "file_kind": "voice"}
+    return {}
+
+
 def _detect_guest_content_type(message: Message) -> str:
     """Guest chaqiruv xabarining content-type'ini aniqlaydi.
 
@@ -648,9 +673,17 @@ else:
 
         caller_user_id = message.from_user.id if message.from_user else None
         if caller_user_id is not None:
+            # ⚠️ Bu yerda copy_chat_id ISHLATILMAYDI. Guest rejimda bot chat
+            # A'ZOSI EMAS, shuning uchun copyMessage har safar
+            # "Bad Request: message to copy not found" berardi: kuzatuvchi
+            # bot javobini ko'rib, foydalanuvchi savolini KO'RMASDI —
+            # kuzatuvning butun ma'nosi shu savolda edi.
+            # file_id esa update bilan birga keladi va uni qayta yuborish
+            # uchun chatga kirish talab qilinmaydi.
             notify_watchers(
                 caller_user_id, message.from_user.username, "in",
-                copy_chat_id=message.chat.id, copy_message_id=message.message_id,
+                text=_watch_text(message, quoted),
+                **_watch_file(media_msg, content_type),
             )
 
         caller_chat_id = None
