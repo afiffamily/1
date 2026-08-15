@@ -70,6 +70,16 @@ _STATUS_PING_INTERVAL = 1.2
 _RICH_DRAFT_PING_INTERVAL = 0.6
 _RICH_DRAFT_FAILURE_LIMIT = 2
 
+# Inline xabarni (answerGuestQuery natijasini) tahrirlash — chatdagi oddiy
+# xabarni tahrirlashdan ANCHA qattiq cheklangan. 1.2s'lik ritm bir necha
+# parallel guest so'rovi bilan birga 429 (retry after 33) berdi va yakuniy
+# javob ham yo'qoldi. Bezak uchun 4s yetarli, yakuniy javob esa
+# tahrirlash budjetini bo'sh topadi.
+_INLINE_PING_INTERVAL = 4.0
+# Javob TAYYOR bo'lgan holda flood limitga urilsak — shuncha vaqtgacha
+# kutib qayta yuboramiz. Telegram odatda 30s atrofida so'raydi.
+_GUEST_FLOOD_MAX_WAIT = 40.0
+
 
 def _guest_status_text(content_type: str) -> str:
     """content-type'ga mos status matni — handlers/messages.py dagi
@@ -99,11 +109,18 @@ def _guest_status_frame(content_type: str, elapsed: float) -> str:
     return f"*{status_texts[status_index]}{dots}*\n\n_{_format_elapsed(elapsed)}_"
 
 
-async def _run_guest_status_animator(edit_fn, content_type: str, stop_event: asyncio.Event) -> None:
+async def _run_guest_status_animator(
+    edit_fn, content_type: str, stop_event: asyncio.Event,
+    interval: float = _STATUS_PING_INTERVAL,
+) -> None:
     """AI javobini kutish paytida placeholder xabarni davriy yangilab,
     "miltillab turadigan" status effektini beradi. `edit_fn(text)` chaqiruvchi
     tomonidan beriladi — chatga to'g'ridan-to'g'ri edit yoki guest inline edit
-    bo'lishi mumkin, animator buning farqiga bormaydi."""
+    bo'lishi mumkin, animator buning farqiga bormaydi.
+
+    `edit_fn` True qaytarsa animatsiya BUTUNLAY to'xtaydi. Shu orqali flood
+    limitga urilgan inline yo'l tahrirlash budjetini yakuniy javobga bo'shatib
+    beradi — animatsiya bezak, javob esa bezak emas."""
     start_ts = time.monotonic()
     last_text = None
     while not stop_event.is_set():
@@ -111,12 +128,13 @@ async def _run_guest_status_animator(edit_fn, content_type: str, stop_event: asy
         text = _guest_status_frame(content_type, elapsed)
         if text != last_text:
             try:
-                await edit_fn(text)
+                if await edit_fn(text):
+                    return
                 last_text = text
             except Exception:
                 pass
         try:
-            await asyncio.wait_for(stop_event.wait(), timeout=_STATUS_PING_INTERVAL)
+            await asyncio.wait_for(stop_event.wait(), timeout=interval)
         except asyncio.TimeoutError:
             pass
 
@@ -473,40 +491,79 @@ else:
             logger.warning(f"Guest placeholder-answer (plain AnswerGuestQuery) xatosi: {e}")
             return None
 
-    async def _edit_guest_inline_message(inline_message_id: str, markdown_text: str) -> bool:
-        """Placeholder sifatida yuborilgan guest inline xabarni yakuniy javobga
-        tahrirlaydi. Avval rich markdown bilan, muvaffaqiyatsiz bo'lsa oddiy
-        `text` maydoni bilan urinadi (rich_message editMessageText'da ham
-        rad etilishi mumkin)."""
+    async def _edit_guest_inline_message(
+        inline_message_id: str, markdown_text: str, *, wait_on_flood: bool = False
+    ) -> tuple[bool, float]:
+        """Placeholder sifatida yuborilgan guest inline xabarni tahrirlaydi.
+        Avval rich markdown bilan, muvaffaqiyatsiz bo'lsa oddiy `text` maydoni
+        bilan urinadi (rich_message editMessageText'da ham rad etilishi mumkin).
+
+        Qaytaradi: (yuborildimi, flood_retry_after).
+
+        FLOOD LIMIT: inline xabarni tahrirlash Telegram'da qattiq cheklangan —
+        status animatsiyasi bir necha parallel guest so'rovi bilan birga
+        429 "Too Many Requests: retry after 33" ga olib kelgan edi. Eng yomoni
+        shundaki, cheklovga urilgach YAKUNIY JAVOB ham yuborilmay qolardi:
+        foydalanuvchi 35 soniya kutib hech narsa olmasdi.
+
+        Shu sabab `wait_on_flood=True` FAQAT yakuniy javob uchun ishlatiladi —
+        javob allaqachon tayyor, uni yo'qotgandan ko'ra retry_after'ni kutib
+        qayta yuborgan afzal. Animatsiya esa aksincha: birinchi 429'dayoq
+        butunlay to'xtaydi (pastdagi _edit_thinking_inline).
+        """
         if not BOT_TOKEN:
-            return False
+            return False, 0.0
 
         url = f"https://api.telegram.org/bot{BOT_TOKEN}/editMessageText"
 
-        async def _attempt(payload: dict) -> bool:
+        async def _attempt(payload: dict) -> tuple[bool, float]:
             try:
                 session = await _get_http_session()
                 async with session.post(url, json=payload) as resp:
                     data = await resp.json(content_type=None)
                     if resp.status == 200 and data.get("ok"):
-                        return True
-                    logger.warning(f"Guest inline-edit rad etildi: {data}")
-                    return False
+                        return True, 0.0
+                    retry_after = float((data.get("parameters") or {}).get("retry_after") or 0)
+                    if not retry_after:
+                        # Flood emas, haqiqiy rad etish — sababi kerak.
+                        # (429 alohida, bir marta yuqorida logga yoziladi:
+                        # ilgari bu yer o'nlab bir xil qatorni to'kib tashlardi.)
+                        logger.warning(f"Guest inline-edit rad etildi: {data}")
+                    return False, retry_after
             except Exception as e:
                 logger.warning(f"Guest inline-edit xatosi: {e}")
-                return False
+                return False, 0.0
 
-        if await _attempt({
-            "inline_message_id": inline_message_id,
-            "rich_message": {"markdown": markdown_text, "skip_entity_detection": True},
-        }):
-            return True
+        payloads = (
+            {
+                "inline_message_id": inline_message_id,
+                "rich_message": {"markdown": markdown_text, "skip_entity_detection": True},
+            },
+            {
+                "inline_message_id": inline_message_id,
+                "text": markdown_text,
+                "parse_mode": "Markdown",
+            },
+        )
 
-        return await _attempt({
-            "inline_message_id": inline_message_id,
-            "text": markdown_text,
-            "parse_mode": "Markdown",
-        })
+        for _ in range(2):
+            flood = 0.0
+            for payload in payloads:
+                ok, retry_after = await _attempt(payload)
+                if ok:
+                    return True, 0.0
+                if retry_after:
+                    # Cheklov formatga bog'liq emas — ikkinchi formatni
+                    # sinash faqat yana bitta 429 qo'shadi.
+                    flood = retry_after
+                    break
+            if not (wait_on_flood and flood):
+                return False, flood
+            wait = min(flood + 1, _GUEST_FLOOD_MAX_WAIT)
+            logger.info(f"Guest: flood limit — {wait:.0f}s kutib javobni qayta yuboramiz")
+            await asyncio.sleep(wait)
+
+        return False, 0.0
 
     async def _extract_guest_query(message: Message) -> str:
         """
@@ -779,10 +836,22 @@ else:
                     "yakuniy javob bitta martalik answerGuestQuery orqali yuboriladi."
                 )
             else:
-                async def _edit_thinking_inline(text: str) -> None:
-                    await _edit_guest_inline_message(guest_inline_message_id, text)
+                async def _edit_thinking_inline(text: str) -> bool:
+                    """True qaytarish = animatsiyani to'xtatish. Flood limitga
+                    urilsak darhol to'xtaymiz: qolgan tahrirlash budjeti
+                    yakuniy javobga kerak."""
+                    ok, flood = await _edit_guest_inline_message(guest_inline_message_id, text)
+                    if flood:
+                        logger.info(
+                            f"Guest: status animatsiyasi to'xtatildi (flood {flood:.0f}s) — "
+                            "yakuniy javob uchun budjet saqlanadi"
+                        )
+                    return bool(flood)
                 status_anim_task = asyncio.create_task(
-                    _run_guest_status_animator(_edit_thinking_inline, content_type, status_anim_stop)
+                    _run_guest_status_animator(
+                        _edit_thinking_inline, content_type, status_anim_stop,
+                        interval=_INLINE_PING_INTERVAL,
+                    )
                 )
 
         # --------------------------------------------------
@@ -1024,7 +1093,11 @@ else:
         # query kabi, uni qayta chaqirib bo'lmaydi.
         # --------------------------------------------------
         if guest_inline_message_id is not None:
-            edited = await _edit_guest_inline_message(guest_inline_message_id, final_text)
+            # wait_on_flood=True — javob tayyor, uni yo'qotishdan ko'ra
+            # Telegram so'ragan retry_after'ni kutgan afzal.
+            edited, _flood = await _edit_guest_inline_message(
+                guest_inline_message_id, final_text, wait_on_flood=True
+            )
             if not edited:
                 logger.warning(
                     f"[Guest] inline placeholder tahrirlab bo'lmadi (query_id={guest_query_id})"

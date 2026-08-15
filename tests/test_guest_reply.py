@@ -1,18 +1,25 @@
-"""Guest rejimda reply qilingan xabar konteksti.
+"""Guest rejimda reply qilingan xabar konteksti va flood limit himoyasi.
 Ishga tushirish: python tests/test_guest_reply.py
 
 NEGA KERAK: guruhda bot a'zo emas va tarixni ko'rmaydi. Reply qilingan
 xabar — botga yetib boradigan YAGONA kontekst. U yo'qolsa, foydalanuvchi
 savolga reply qilib botni chaqirganda bot "nima haqida gap ketyapti?" deb
 so'raydi va Guest Mode'ning eng tabiiy ishlatilishi buziladi.
+
+12-13-band — HAQIQIY loglardan chiqqan xato: status animatsiyasi inline
+xabarni juda tez tahrirlab 429 flood limitiga urdi va shu sabab YAKUNIY
+JAVOB ham yuborilmay qoldi. Foydalanuvchi 35 soniya kutib hech narsa olmadi.
 """
 
 import os
 import sys
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+import asyncio
 
+import handlers.guest as guest
 from handlers.guest import (
     _quoted_context, _media_source, _detect_guest_content_type, _QUOTE_MAX_CHARS,
+    _run_guest_status_animator, _edit_guest_inline_message,
 )
 
 
@@ -131,5 +138,128 @@ def main():
     print("\nguest reply: barcha tekshiruvlar o'tdi (11/11).")
 
 
+# ═══════════════════════════════════════════════════════════════════
+#  FLOOD LIMIT (429) — soxta HTTP sessiya bilan
+# ═══════════════════════════════════════════════════════════════════
+
+class FakeResponse:
+    def __init__(self, payload):
+        self._payload = payload
+        self.status = 200
+
+    async def json(self, **kwargs):
+        return self._payload
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *a):
+        return False
+
+
+class FakeSession:
+    """Har chaqiruvda `replies` ro'yxatidagi navbatdagi javobni beradi;
+    ro'yxat tugasa oxirgisini takrorlaydi."""
+    def __init__(self, replies):
+        self.replies = list(replies)
+        self.calls = []
+
+    def post(self, url, json=None):
+        self.calls.append(json)
+        payload = self.replies.pop(0) if len(self.replies) > 1 else self.replies[0]
+        return FakeResponse(payload)
+
+
+FLOOD = {"ok": False, "error_code": 429, "description": "Too Many Requests",
+         "parameters": {"retry_after": 30}}
+OK = {"ok": True, "result": {}}
+
+
+async def flood_tests():
+    guest.BOT_TOKEN = guest.BOT_TOKEN or "test-token"
+    slept = []
+
+    async def fake_sleep(sec):
+        slept.append(sec)
+
+    real_sleep = asyncio.sleep
+    asyncio.sleep = fake_sleep
+
+    try:
+        # ═══════════════════════════════════════════════════════════
+        # 12) YAKUNIY JAVOB FLOOD'DAN KEYIN HAM YETIB BORADI
+        #     Javob tayyor — uni yo'qotgandan ko'ra kutgan afzal.
+        # ═══════════════════════════════════════════════════════════
+        session = FakeSession([FLOOD, OK])
+        guest._get_http_session = lambda: _ready(session)
+        ok, _ = await _edit_guest_inline_message("iid", "javob", wait_on_flood=True)
+        assert ok, "flood'dan keyin javob YO'QOLDI — aynan shu xato edi"
+        assert slept and slept[0] <= guest._GUEST_FLOOD_MAX_WAIT, slept
+        print(f"[12] 429 dan keyin {slept[0]:.0f}s kutib javob yetkazildi OK")
+
+        # ── 13) Flood'da ikkinchi format sinalmaydi (yana bir 429 bermaslik)
+        session = FakeSession([FLOOD])
+        guest._get_http_session = lambda: _ready(session)
+        ok, flood = await _edit_guest_inline_message("iid", "status")
+        assert not ok and flood == 30, (ok, flood)
+        assert len(session.calls) == 1, (
+            f"flood paytida {len(session.calls)} ta so'rov — cheklovni "
+            f"yomonlashtiradi, bittasi yetarli")
+        print("[13] flood paytida ortiqcha so'rov yuborilmadi OK")
+
+        # ── 14) Oddiy rad etishda esa zaxira format SINALADI ────────
+        session = FakeSession([{"ok": False, "description": "can't parse"}, OK])
+        guest._get_http_session = lambda: _ready(session)
+        ok, _ = await _edit_guest_inline_message("iid", "javob")
+        assert ok and len(session.calls) == 2, (ok, len(session.calls))
+        assert "text" in session.calls[1], "zaxira oddiy matn formati bo'lishi kerak"
+        print("[14] rich rad etilsa oddiy matnga tushdi OK")
+    finally:
+        asyncio.sleep = real_sleep
+
+    # ═══════════════════════════════════════════════════════════════
+    # 15) ANIMATSIYA FLOOD'DA DARHOL TO'XTAYDI
+    #     Aks holda u tahrirlash budjetini yeb, yakuniy javobni
+    #     yuborishga imkon qoldirmaydi.
+    # ═══════════════════════════════════════════════════════════════
+    calls = []
+
+    async def flooding_edit(text):
+        calls.append(text)
+        return True          # True = "to'xta"
+
+    stop = asyncio.Event()
+    await asyncio.wait_for(
+        _run_guest_status_animator(flooding_edit, "text", stop, interval=0.01),
+        timeout=2,
+    )
+    assert len(calls) == 1, f"animatsiya to'xtamadi, {len(calls)} marta chaqirdi"
+    print("[15] flood signalida animatsiya darhol to'xtadi OK")
+
+    # ── 16) Oddiy holatda esa animatsiya davom etadi ────────────────
+    calls2 = []
+
+    async def normal_edit(text):
+        calls2.append(text)
+        if len(calls2) >= 3:
+            stop2.set()
+        return False
+
+    stop2 = asyncio.Event()
+    await asyncio.wait_for(
+        _run_guest_status_animator(normal_edit, "text", stop2, interval=0.01),
+        timeout=2,
+    )
+    assert len(calls2) >= 3, calls2
+    print("[16] oddiy holatda animatsiya ishlashda davom etdi OK")
+
+    print("\nflood himoyasi: barcha tekshiruvlar o'tdi (5/5).")
+
+
+async def _ready(value):
+    return value
+
+
 if __name__ == "__main__":
     main()
+    asyncio.run(flood_tests())
