@@ -319,7 +319,15 @@ async def _send_output_files(chat_id: int, output_files: list) -> None:
 
     Bitta fayldagi xato qolganlarini to'xtatmaydi va jim qolmaydi —
     foydalanuvchi nima bo'lganini biladi.
+
+    ⚠️ Oxirgi muvaffaqiyatli yuborilgan fayl `_remember_file(produced=True)`
+    bilan eslab qolinadi. Busiz keyingi so'rov ("nomini ham o'zgartir")
+    foydalanuvchining DASTLABKI xom fayliga qaytardi va botning o'z ishi
+    yo'qolardi: birinchi tahrir bekor bo'lib, faqat oxirgi so'ralgan
+    o'zgarish qolardi. Foydalanuvchi buni "bot eslab qololmayapti" deb
+    ko'radi va haq bo'ladi.
     """
+    last_sent: tuple[str, bytes] | None = None
     for filename, content in output_files:
         if len(content) > MAX_TELEGRAM_DOCUMENT_SIZE:
             logger.warning(f"Natija fayl juda katta: {filename} ({len(content)} bayt)")
@@ -341,18 +349,27 @@ async def _send_output_files(chat_id: int, output_files: list) -> None:
                 and len(content) <= MAX_TELEGRAM_PHOTO_SIZE):
             try:
                 await bot.send_photo(chat_id, BufferedInputFile(content, filename=filename))
+                last_sent = (filename, content)
                 continue
             except Exception as e:
                 logger.warning(f"Rasmni photo sifatida yuborib bo'lmadi ({filename}): {e}")
 
         try:
             await bot.send_document(chat_id, BufferedInputFile(content, filename=filename))
+            last_sent = (filename, content)
         except Exception as e:
             logger.warning(f"Natija faylni yuborib bo'lmadi ({filename}): {e}")
             try:
                 await bot.send_message(chat_id, f"⚠️ «{filename}» faylini yuborishda xatolik yuz berdi.")
             except Exception:
                 pass
+
+    # Foydalanuvchiga YETIB BORGAN oxirgi fayl keyingi so'rovning boshlang'ich
+    # nuqtasi bo'ladi. Yuborilmagan fayl eslab qolinmaydi — aks holda
+    # foydalanuvchi ko'rmagan natija ustida ish davom etardi.
+    if last_sent is not None:
+        _remember_file(chat_id, last_sent[1], last_sent[0], produced=True)
+        logger.info(f"[Fayl] natija eslab qolindi: {last_sent[0]} (chat={chat_id})")
 
 
 STATUS_TEXTS_BY_TYPE: dict[str, list[str]] = {
@@ -1034,10 +1051,17 @@ def _get_pending_file(chat_id: int) -> dict | None:
     return rec if rec and rec.get("bytes") else None
 
 
-def _remember_file(chat_id: int, file_bytes: bytes, file_name: str) -> None:
+def _remember_file(chat_id: int, file_bytes: bytes, file_name: str,
+                   *, produced: bool = False) -> None:
+    """`produced=True` — faylni BOT yaratgan (foydalanuvchi yuklagan emas).
+
+    Bu farq muhim: davomiy so'rov ("nomini ham o'zgartir") botning OXIRGI
+    natijasi ustiga qo'yilishi kerak, dastlabki xom fayl ustiga emas.
+    """
     _prune_pending_files()
     rec = _pending_files.setdefault(chat_id, {})
-    rec.update({"ts": time.time(), "bytes": file_bytes, "name": file_name})
+    rec.update({"ts": time.time(), "bytes": file_bytes, "name": file_name,
+                "produced": produced})
 
 
 def _capture_instruction(chat_id: int, text: str) -> bool:
@@ -1069,7 +1093,8 @@ async def _wait_for_instruction(chat_id: int) -> str | None:
     return rec.pop("instruction", None)
 
 
-def pending_file_note(file_name: str, *, earlier: bool = False) -> str:
+def pending_file_note(file_name: str, *, earlier: bool = False,
+                      produced: bool = False) -> str:
     """Modelga faylning sandbox ichida MAVJUDLIGINI aniq aytadigan izoh.
 
     Busiz model ko'rgan narsasi (matn ko'rinishi yoki uning yo'qligi)
@@ -1077,6 +1102,20 @@ def pending_file_note(file_name: str, *, earlier: bool = False) -> str:
     qilib, tahrirlashdan bosh tortadi.
     """
     ext = file_name.rsplit(".", 1)[-1].lower() if "." in file_name else "bin"
+    if produced:
+        # ⚠️ Modelga bu faylni O'ZI yaratganini aytish SHART. Aks holda u
+        # xuddi yangi xom fayl kelgandek ishlaydi va oldingi tahrirlarni
+        # bekor qilib, faqat oxirgi so'ralgan o'zgarishni qo'yib beradi —
+        # foydalanuvchi uchun bu "bot esidan chiqardi" bo'lib ko'rinadi.
+        return (
+            f"[FAYL BIRIKTIRILGAN] Bu — SEN oxirgi marta yaratib bergan "
+            f"«{file_name}» fayli. Foydalanuvchi shu natijani DAVOM "
+            f"ETTIRMOQCHI: undagi barcha oldingi o'zgarishlar saqlanib "
+            f"qolishi shart, yangi so'rov ularning USTIGA qo'yiladi. Fayl "
+            f"run_python_sandbox tool'i ichida `input.{ext}` yo'lida XOM "
+            f"HOLDA turibdi. Ishni noldan boshlamang va faylni qayta "
+            f"so'ramang."
+        )
     qachon = "avval " if earlier else ""
     return (
         f"[FAYL BIRIKTIRILGAN] Foydalanuvchi {qachon}«{file_name}» faylini "
@@ -1233,7 +1272,9 @@ async def _process_merged_text(chat_id: int, buf: dict, state: FSMContext):
         pending = _get_pending_file(chat_id)
         prompt_text, file_kwargs = merged_text, {}
         if pending:
-            prompt_text = (f"{pending_file_note(pending['name'], earlier=True)}"
+            note = pending_file_note(pending['name'], earlier=True,
+                                     produced=pending.get('produced', False))
+            prompt_text = (f"{note}"
                            f"\n\nFoydalanuvchi so'rovi: {merged_text}")
             file_kwargs = {"input_file_bytes": pending["bytes"],
                            "input_filename": pending["name"]}
