@@ -976,8 +976,13 @@ async def handle_start(message: Message, state: FSMContext, command: CommandObje
         # botdagi eng yomon nosozlik. Shuning uchun oddiy emojili
         # variantga tushamiz (qalin matn saqlanadi).
         logger.warning(f"[/start] premium emoji rad etildi: {exc}")
+        # ⚠️ Klaviatura ham SODDALASHTIRILADI. Rad etilgan narsa matndagi
+        # <tg-emoji> bo'lishi shart emas — tugmadagi icon_custom_emoji_id
+        # ham xuddi shu xatoni beradi. Eski kb bilan qayta urinish o'sha
+        # holatda yana yiqilib, tugmani BUTUNLAY yo'qotardi.
+        plain_kb = pro_module._downgrade_kb(kb)
         try:
-            await message.answer(_greeting_text(premium=False), reply_markup=kb)
+            await message.answer(_greeting_text(premium=False), reply_markup=plain_kb)
         except TelegramBadRequest:
             # Tugma ham rad etilsa (masalan `style` maydonini bilmaydigan
             # eski mijoz) — salomlashuvning O'ZI baribir yetib borsin.

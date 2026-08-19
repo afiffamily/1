@@ -134,7 +134,39 @@ async def main():
         "/help menyuda bo'lmasa, ekranni faqat /start ko'rganlar topadi")
     print("[8] /help buyruqlar menyusida OK")
 
-    print("\ncapabilities: barcha tekshiruvlar o'tdi (8/8).")
+    # ═══════════════════════════════════════════════════════════════
+    # 9) TUGMA IKONKALARI — premium emoji HAQIQIY ID'ga tushishi
+    # ═══════════════════════════════════════════════════════════════
+    # icon= nomi CUSTOM_EMOJI'da bo'lmasa pro.btn() uni JIMGINA tashlab
+    # ketadi: xato chiqmaydi, tugma shunchaki emojisiz qoladi. Shuning
+    # uchun bog'lanishni test tekshiradi.
+    from core.config import CUSTOM_EMOJI
+    menu_buttons = _all_buttons(cap._menu_keyboard()) + [cap.menu_button()]
+    for b in menu_buttons:
+        eid = getattr(b, "icon_custom_emoji_id", None)
+        assert eid, f"'{b.text}' tugmasida premium ikonka yo'q"
+        assert eid in CUSTOM_EMOJI.values(), (b.text, eid)
+    print(f"[9] {len(menu_buttons)} ta tugmada premium ikonka bor OK")
+
+    # ── 10) Matnda emoji TAKRORLANMAYDI ────────────────────────────
+    # Ikonka tugmaning O'ZIGA qo'yiladi; matnda ham emoji qolsa
+    # foydalanuvchi ikkita emoji ko'rardi.
+    for b in menu_buttons:
+        assert not any(ord(ch) > 0x2100 for ch in b.text[:2]), (
+            f"'{b.text}' matnida oddiy emoji qolib ketgan — ikonka bilan "
+            f"birga ikkita emoji chiqadi")
+    print("[10] tugma matnida emoji takrorlanmadi OK")
+
+    # ── 11) Bo'lim sarlavhasi tugma bilan BIR XIL emojida ──────────
+    # Manba bitta: SECTIONS[key]["emoji"]. Ajralib ketsa foydalanuvchi
+    # tugmada bir emoji, ochilgan ekranda boshqasini ko'rardi.
+    for key in cap.SECTIONS:
+        eid = CUSTOM_EMOJI.get(cap.SECTIONS[key]["emoji"][0])
+        assert eid, f"{key}: emoji kaliti CUSTOM_EMOJI'da yo'q"
+        assert eid in cap._section_text(key), key
+    print("[11] sarlavha va tugma bir xil emojida OK")
+
+    print("\ncapabilities: barcha tekshiruvlar o'tdi (11/11).")
 
 
 if __name__ == "__main__":

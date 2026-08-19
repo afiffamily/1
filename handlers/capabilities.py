@@ -40,8 +40,8 @@ _FREE = PLAN_LIMITS["free"]
 # oddiy emojiga tushadi.
 SECTIONS: dict[str, dict] = {
     "chat": {
-        "button": "💬 Suhbat",
-        "emoji": ("text", "💬"),
+        "button": "Suhbat",
+        "emoji": ("chat", "💬"),
         "title": "SUHBAT VA INTERNET QIDIRUVI",
         "body": (
             "Istalgan savolni bering — javob yozilib borayotganini "
@@ -57,7 +57,7 @@ SECTIONS: dict[str, dict] = {
         "note": "🧹 Suhbatni noldan boshlash: /new",
     },
     "doc": {
-        "button": "📄 Hujjat",
+        "button": "Hujjat",
         "emoji": ("file", "📄"),
         "title": "HUJJAT TAHLILI",
         "body": (
@@ -70,7 +70,7 @@ SECTIONS: dict[str, dict] = {
         "note": f"📎 Hajmi: bepulda {_MB_FREE} MB, Pro'da {_MB_PRO} MB gacha",
     },
     "photo": {
-        "button": "📸 Rasm",
+        "button": "Rasm",
         "emoji": ("photo", "📸"),
         "title": "RASM TAHLILI",
         "body": (
@@ -84,7 +84,7 @@ SECTIONS: dict[str, dict] = {
         "note": "",
     },
     "voice": {
-        "button": "🎙 Ovoz",
+        "button": "Ovoz",
         "emoji": ("voice", "🎙"),
         "title": "OVOZLI XABAR",
         "body": (
@@ -98,8 +98,8 @@ SECTIONS: dict[str, dict] = {
         "note": "🎧 Javob matn va ovoz — ikkalasi ham keladi",
     },
     "file": {
-        "button": "🛠 Fayl yaratish",
-        "emoji": ("tools", "🛠"),
+        "button": "Fayl yaratish",
+        "emoji": ("build", "🛠"),
         "title": "FAYL YARATISH VA TAHRIRLASH",
         "body": (
             "Tayyor fayl yasab beraman — chatga biriktirilgan holda "
@@ -117,8 +117,8 @@ SECTIONS: dict[str, dict] = {
                  f"Pro'da {_PRO['files']} ta"),
     },
     "pro": {
-        "button": "💎 Pro",
-        "emoji": ("bot", "💎"),
+        "button": "Pro",
+        "emoji": ("pro", "💎"),
         "title": "PRO IMKONIYATLARI",
         "body": (
             f"├ 🖼 <b>Rasm chizish</b> — kuniga {_PRO['images']} ta\n"
@@ -140,8 +140,8 @@ SECTIONS: dict[str, dict] = {
     # tashlangandan keyin bu ayniqsa muhim — odamlar hali ham havola
     # tashlab ko'radi va sababini bilmasa botni ayblaydi.
     "limits": {
-        "button": "🚫 Chegaralarim",
-        "emoji": ("text", "🚫"),
+        "button": "Chegaralarim",
+        "emoji": ("limits", "🚫"),
         "title": "NIMALARNI QILA OLMAYMAN",
         "body": (
             "Halol aytganim ma'qul — vaqtingizni behuda sarflamang:\n\n"
@@ -176,20 +176,24 @@ def _menu_keyboard() -> InlineKeyboardMarkup:
     rows = []
     for row in _ROWS:
         rows.append([
+            # icon= premium (animatsion) emoji tugmaning O'ZIGA qo'yadi.
+            # Manba bitta — SECTIONS[key]["emoji"], ya'ni bo'lim sarlavhasi
+            # bilan tugma har doim bir xil emojini ko'rsatadi.
             pro_module.btn(SECTIONS[key]["button"], f"cap:{key}",
-                           style=BTN_PRIMARY if key != "pro" else BTN_SUCCESS)
+                           style=BTN_PRIMARY if key != "pro" else BTN_SUCCESS,
+                           icon=SECTIONS[key]["emoji"][0])
             for key in row
         ])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
 def _section_keyboard(key: str) -> InlineKeyboardMarkup:
-    rows = [[pro_module.btn("⬅️ Orqaga", "cap:menu")]]
+    rows = [[pro_module.btn("⬅️ Orqaga", "cap:menu")]]  # ikonkasiz — bu navigatsiya
     # Pro bo'limidan to'g'ridan-to'g'ri sotib olish ekraniga — konversiya
     # uchun eng qulay payt aynan shu yerda.
     if key == "pro":
-        rows.insert(0, [pro_module.btn("💎 Pro tarifga o'tish", "pro:open",
-                                       style=BTN_SUCCESS)])
+        rows.insert(0, [pro_module.btn("Pro tarifga o'tish", "pro:open",
+                                       style=BTN_SUCCESS, icon="pro")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
@@ -209,7 +213,8 @@ def _section_text(key: str) -> str:
 
 def menu_button():
     """/start ostiga qo'yiladigan tugma (handlers/messages.py ishlatadi)."""
-    return pro_module.btn("🎯 Nima qila olaman?", "cap:menu", style=BTN_PRIMARY)
+    return pro_module.btn("Nima qila olaman?", "cap:menu",
+                          style=BTN_PRIMARY, icon="capabilities")
 
 
 async def _show(target: Message, text: str, kb: InlineKeyboardMarkup,

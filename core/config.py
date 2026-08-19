@@ -669,6 +669,16 @@ CUSTOM_EMOJI: dict[str, str] = {
     "write":    "5470060791883374114",   # ✍️
     "reminder": "5251537301154062376",   # ⏰ eslatma qo'yilayotgan status
     "memory":   "5449867148442745397",   # 🧠 foydalanuvchi eslab qolinayotgan status
+    # «Nima qila olaman?» ekrani. Bular MATN ichida emas, TUGMA ikonkasi
+    # sifatida ishlatiladi (InlineKeyboardButton.icon_custom_emoji_id) —
+    # shuning uchun tugma matnida oddiy emoji takrorlanmaydi.
+    # photo/voice/file kalitlari shu ekran uchun ham to'g'ri ID'da turibdi,
+    # takrorlash shart emas.
+    "capabilities": "5866391659469606245",   # 🎯 «Nima qila olaman?»
+    "chat":         "5334532274224377333",   # 💬 Suhbat
+    "build":        "5357315181649076022",   # 🛠 Fayl yaratish
+    "pro":          "5246734896356936944",   # 💎 Pro
+    "limits":       "5280803324273115630",   # 🚫 Chegaralarim
 }
 # ⚠️ "document" kaliti 🛠 ID'sini saqlaydi, lekin handlers/pro.py da
 # pe('document', '📄') deb ishlatiladi — ya'ni Pro xabarida 📄 o'rniga
