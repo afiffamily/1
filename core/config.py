@@ -18,6 +18,13 @@ BOT_TOKEN: Optional[str] = os.getenv("BOT_TOKEN")
 OPENAI_API_KEY: Optional[str] = os.getenv("OPENAI_API_KEY")
 OPENAI_BASE_URL: Optional[str] = os.getenv("OPENAI_BASE_URL")  
 
+# Gemini — FAQAT o'zbekcha TTS uchun (matn generatsiyasi hamon GPT_MODEL'da).
+# Majburiy emas: kalit bo'lmasa yoki kvota tugasa, o'zbek ovozi ham eski
+# edge-tts zaxirasiga tushadi va bot ishlashda davom etadi.
+GEMINI_API_KEY: Optional[str] = os.getenv("GEMINI_API_KEY")
+GEMINI_TTS_MODEL: str = os.getenv("GEMINI_TTS_MODEL", "gemini-3.1-flash-tts-preview")
+GEMINI_TTS_VOICE: str = os.getenv("GEMINI_TTS_VOICE", "Kore")
+
 _REQUIRED_ENV_VARS = {
     "BOT_TOKEN": BOT_TOKEN,
     "OPENAI_API_KEY": OPENAI_API_KEY,

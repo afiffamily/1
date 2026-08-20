@@ -27,13 +27,16 @@ from services.sandbox import run_in_sandbox
 try:
     from core.config import (
         GPT_MODEL, MODEL_FALLBACKS, CONTEXT_WINDOW, CONTEXT_WINDOW_PRO,
-        OPENAI_API_KEY,
+        OPENAI_API_KEY, GEMINI_API_KEY, GEMINI_TTS_MODEL, GEMINI_TTS_VOICE,
         REQUEST_TIMEOUT, CONCISE_INSTRUCTION, STRICT_MATH_RULES,
         build_system_prompt, build_request_params, pick_reasoning_effort,
     )
 except ImportError:
     import os
     OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+    GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+    GEMINI_TTS_MODEL = "gemini-3.1-flash-tts-preview"
+    GEMINI_TTS_VOICE = "Kore"
     CONCISE_INSTRUCTION = ""
     STRICT_MATH_RULES = ""
     GPT_MODEL = "gpt-4o-mini"
@@ -1953,12 +1956,137 @@ def clean_text_for_speech(text: str) -> str:
     return re.sub(r"[ \t]{2,}", " ", text).strip()
 
 
+# ─────────────────────────────────────────────────────────────
+# O'ZBEKCHA TTS: GEMINI
+#
+# edge-tts ning uz-UZ-MadinaNeural ovozi sun'iy va "chala" talaffuz
+# qiladi. Gemini TTS o'zbekchani sezilarli tabiiyroq o'qiydi, shuning
+# uchun FAQAT `lang == "uz"` shu yerga buriladi. RU/EN ataylab edge-tts'da
+# qoladi: ular allaqachon ona tili ovozlari va Gemini'ning bepul kvotasini
+# bekorga yeyishning ma'nosi yo'q.
+#
+# SDK (google-genai) ATAYLAB qo'shilmadi — bu bitta HTTP POST, `aiohttp`
+# esa allaqachon bog'liqlikda va tabiiy async. SDK sinxron ishlaydi va uni
+# yana `to_thread` bilan o'rash kerak bo'lardi.
+# ─────────────────────────────────────────────────────────────
+_GEMINI_TTS_URL = (
+    "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
+)
+
+# Ohang ko'rsatmasi MATN ICHIDA beriladi: bu model `systemInstruction`ni
+# qabul qilmaydi — API "Developer instruction is not enabled for this
+# model" deb 400 qaytaradi. Ko'rsatma ovozga O'QILMAYDI, bu o'lchandi:
+# aynan bir xil matn prefiks bilan 4.96 s, prefikssiz 5.48 s chiqdi — agar
+# o'qilganda ~10 s uzayardi.
+_GEMINI_TTS_STYLE = (
+    "Read the following text naturally in Uzbek. Use clear Uzbek pronunciation "
+    "and conversational intonation. Do not translate or rewrite the text. "
+    "Speak exactly the provided response:\n\n"
+)
+
+# Javob mimeType'i: "audio/l16; rate=24000; channels=1"
+_GEMINI_PCM_RATE_RE = re.compile(r"rate=(\d+)")
+_GEMINI_TTS_MAX_CHARS = 4000
+
+
+def _pcm_to_mp3(pcm: bytes, rate: int, filename: str) -> None:
+    """Raw PCM (mono, 16-bit) -> mp3. pydub/ffmpeg bloklaydi — to_thread ichida.
+
+    mp3 ATAYLAB: edge-tts ham aynan shu formatni shu nom bilan chiqaradi,
+    ya'ni chaqiruvchi kod ham, Telegram xatti-harakati ham o'zgarmaydi.
+    Raw PCM yoki noto'g'ri sarlavhali WAV yuborilsa, Telegram ovozli
+    xabarni "0 sekund" qilib ko'rsatadi.
+    """
+    AudioSegment(
+        data=pcm, sample_width=2, frame_rate=rate, channels=1
+    ).export(filename, format="mp3")
+
+
+async def _gemini_tts(text: str, filename: str) -> Optional[str]:
+    """O'zbekcha matnni Gemini TTS orqali ovozga aylantiradi.
+
+    Muvaffaqiyatsizlikda None qaytaradi — chaqiruvchi edge-tts'ga tushadi.
+    Har qanday xato (kalit yo'q, 401/403, 404, 429 kvota, timeout, bo'sh
+    audio, buzuq javob) bir xil yo'l bilan hal bo'ladi, chunki natija bitta:
+    zaxira ovozga o'tish.
+
+    ⚠️ QAYTA URINISH YO'Q — ataylab. Xato deyarli har doim kvota yoki kalit
+    bilan bog'liq, ikkinchi urinish ham xuddi shunday yiqiladi, lekin bepul
+    kvotani ikki barobar yeydi.
+
+    ⚠️ API kaliti sarlavhada ketadi, URL'da EMAS — shuning uchun u loglarga,
+    xato matnlariga yoki exception'larga tushmaydi. Shu sababli xatolarda
+    `str(e)` emas, faqat `type(e).__name__` yoziladi.
+    """
+    if not GEMINI_API_KEY:
+        return None
+
+    payload = {
+        "contents": [
+            {"parts": [{"text": _GEMINI_TTS_STYLE + text[:_GEMINI_TTS_MAX_CHARS]}]}
+        ],
+        "generationConfig": {
+            "responseModalities": ["AUDIO"],
+            "speechConfig": {
+                "voiceConfig": {"prebuiltVoiceConfig": {"voiceName": GEMINI_TTS_VOICE}}
+            },
+        },
+    }
+
+    try:
+        async with aiohttp.ClientSession(
+            timeout=aiohttp.ClientTimeout(total=REQUEST_TIMEOUT)
+        ) as session:
+            async with session.post(
+                _GEMINI_TTS_URL.format(model=GEMINI_TTS_MODEL),
+                json=payload,
+                headers={"x-goog-api-key": GEMINI_API_KEY},
+            ) as resp:
+                if resp.status != 200:
+                    logger.warning(
+                        f"[TTS-Gemini] HTTP {resp.status} — edge-tts zaxirasi"
+                    )
+                    return None
+                data = await resp.json()
+
+        inline = data["candidates"][0]["content"]["parts"][0]["inlineData"]
+        pcm = base64.b64decode(inline["data"])
+        if not pcm:
+            logger.warning("[TTS-Gemini] bo'sh audio — edge-tts zaxirasi")
+            return None
+
+        # Chastota javobdan olinadi. Qattiq 24000 yozilsa va model boshqa
+        # qiymat qaytarsa, ovoz tezlashib yoki cho'zilib ketardi.
+        match = _GEMINI_PCM_RATE_RE.search(inline.get("mimeType", ""))
+        rate = int(match.group(1)) if match else 24000
+
+        await asyncio.to_thread(_pcm_to_mp3, pcm, rate, filename)
+        logger.info(f"[TTS-Gemini] til=uz ovoz={GEMINI_TTS_VOICE} rate={rate}")
+        return filename
+
+    except (KeyError, IndexError, TypeError, ValueError):
+        logger.warning("[TTS-Gemini] javob formati kutilmagan — edge-tts zaxirasi")
+    except Exception as e:
+        logger.warning(f"[TTS-Gemini] xato ({type(e).__name__}) — edge-tts zaxirasi")
+    return None
+
+
 async def text_to_speech(text: str, filename: str) -> str:
     speech_text = clean_text_for_speech(text)
     if not speech_text:
         return None
 
     lang = detect_speech_lang(speech_text)
+
+    # UZ -> Gemini (tabiiyroq talaffuz). RU/EN o'zgarishsiz edge-tts'da
+    # qoladi. Gemini yiqilsa None qaytaradi va quyidagi edge-tts kodi
+    # o'sha-o'sha ishlaydi — ya'ni zaxira alohida yozilmagan, mavjud yo'l
+    # zaxira bo'lib xizmat qiladi.
+    if lang == "uz":
+        gemini_out = await _gemini_tts(speech_text, filename)
+        if gemini_out:
+            return gemini_out
+
     voice, rate = _TTS_VOICES.get(lang, _TTS_VOICES["uz"])
     logger.info(f"[TTS] til={lang} ovoz={voice}")
 
