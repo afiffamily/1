@@ -1975,13 +1975,18 @@ _GEMINI_TTS_URL = (
 
 # Ohang ko'rsatmasi MATN ICHIDA beriladi: bu model `systemInstruction`ni
 # qabul qilmaydi — API "Developer instruction is not enabled for this
-# model" deb 400 qaytaradi. Ko'rsatma ovozga O'QILMAYDI, bu o'lchandi:
-# aynan bir xil matn prefiks bilan 4.96 s, prefikssiz 5.48 s chiqdi — agar
-# o'qilganda ~10 s uzayardi.
+# model" deb 400 qaytaradi.
+#
+# Ko'rsatma ovozga o'qilmasligi avvalgi (qisqaroq) matn bilan o'lchangan:
+# prefiks bilan 4.96 s, prefikssiz 5.48 s — o'qilganda ~10 s uzayardi.
+# ⚠️ Quyidagi joriy matn shu tarzda TEKSHIRILMAGAN: o'lchash paytida
+# bepul kvota tugagan edi. Agar javob boshida ingliz tilida ko'rsatma
+# eshitilsa — sabab shu, `\n\n` o'rniga oxiriga ikki nuqta qo'ying.
 _GEMINI_TTS_STYLE = (
-    "Read the following text naturally in Uzbek. Use clear Uzbek pronunciation "
-    "and conversational intonation. Do not translate or rewrite the text. "
-    "Speak exactly the provided response:\n\n"
+    "Speak the provided text naturally in Uzbek. Use native Uzbek pronunciation, "
+    "natural conversational intonation, appropriate pauses and emphasis. "
+    "Do not translate, rewrite, summarize, or add any words. "
+    "Read the text exactly as provided.\n\n"
 )
 
 # Javob mimeType'i: "audio/l16; rate=24000; channels=1"
