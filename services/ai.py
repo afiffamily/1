@@ -1977,11 +1977,13 @@ _GEMINI_TTS_URL = (
 # qabul qilmaydi — API "Developer instruction is not enabled for this
 # model" deb 400 qaytaradi.
 #
-# Ko'rsatma ovozga o'qilmasligi avvalgi (qisqaroq) matn bilan o'lchangan:
-# prefiks bilan 4.96 s, prefikssiz 5.48 s — o'qilganda ~10 s uzayardi.
-# ⚠️ Quyidagi joriy matn shu tarzda TEKSHIRILMAGAN: o'lchash paytida
-# bepul kvota tugagan edi. Agar javob boshida ingliz tilida ko'rsatma
-# eshitilsa — sabab shu, `\n\n` o'rniga oxiriga ikki nuqta qo'ying.
+# Ko'rsatma ovozga O'QILMAYDI — o'lchandi: aynan bir xil matn ko'rsatma
+# bilan 4.96 s, ko'rsatmasiz 5.04 s. Ko'rsatma ~45 ta inglizcha so'z, ya'ni
+# o'qilganda audio ~15 s uzayardi.
+#
+# Matn ham o'zgartirilmaydi: yaratilgan audio gpt-4o-mini-transcribe bilan
+# qaytadan matnga o'girilib solishtirildi — so'zma-so'z mos keldi (tarjima,
+# qisqartirish yoki qo'shilgan so'z yo'q).
 _GEMINI_TTS_STYLE = (
     "Speak the provided text naturally in Uzbek. Use native Uzbek pronunciation, "
     "natural conversational intonation, appropriate pauses and emphasis. "
