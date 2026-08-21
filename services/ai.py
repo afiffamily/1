@@ -102,6 +102,25 @@ async def safe_get_chat_history(chat_id: int, limit: int = CONTEXT_WINDOW) -> Li
 # ─────────────────────────────────────────────────────────────
 
 _RICH_CODE_RE = re.compile(r"```([a-zA-Z0-9_+-]*)\n(.*?)\n```", re.S)
+
+# Sana/matematika almashtirishidan HIMOYALANADIGAN bo'laklar: kod bloklari
+# va HAVOLALAR.
+#
+# ⚠️ Havolalar shu ro'yxatda bo'lishi SHART. URL ichida sana bo'lishi juda
+# odatiy hol — masalan `.../uz/2026-08-20/dollar-oshdi-...`. Himoyasiz
+# qolsa, sana naqshi uni topib `<tg-time>` tegiga o'raydi va ikki narsa
+# birdan buziladi:
+#   1. URL yaroqsiz bo'ladi — havola ochilmaydi;
+#   2. `markdown` maydoniga HTML-only teg tushadi, Telegram parseri
+#      to'xtaydi va BUTUN xabar xom ko'rinadi (`*yulduzcha*`lar ham).
+# Ikkinchisi aynan `_rich_message_payload()` izohida ogohlantirilgan xato.
+# `\S+` havola oxiridagi `)` ni ham qamrab oladi — bu zararsiz, chunki
+# bo'lak keyin AYNAN o'zi holida qaytariladi.
+_RICH_PROTECT_RE = re.compile(
+    r"```[a-zA-Z0-9_+-]*\n.*?\n```"   # kod bloklari
+    r"|https?://\S+",                  # havolalar
+    re.S,
+)
 _RICH_MATH_BLOCK_RE = re.compile(r"(?<!\\)\$\$(.+?)\$\$", re.S)
 _RICH_MATH_INLINE_RE = re.compile(r"(?<!\\)\$(?!\s)(.+?)(?<!\s)\$(?!\$)", re.S)
 _RICH_DATE_PATTERNS = (
@@ -110,18 +129,19 @@ _RICH_DATE_PATTERNS = (
 )
 
 
-def _protect_code_blocks(text: str):
+def _protect_spans(text: str):
+    """Tegilmasligi kerak bo'lgan bo'laklarni vaqtincha token bilan almashtiradi."""
     placeholders = []
 
     def repl(match):
-        token = f"@@CODE_BLOCK_{len(placeholders)}@@"
+        token = f"@@RICH_PROTECT_{len(placeholders)}@@"
         placeholders.append((token, match.group(0)))
         return token
 
-    return _RICH_CODE_RE.sub(repl, text), placeholders
+    return _RICH_PROTECT_RE.sub(repl, text), placeholders
 
 
-def _restore_code_blocks(text: str, placeholders):
+def _restore_spans(text: str, placeholders):
     for token, block in placeholders:
         text = text.replace(token, block)
     return text
@@ -192,11 +212,11 @@ def build_rich_markdown(text: str) -> str:
     """Best-effort rich message markdown for Telegram Bot API 10.1."""
     if not text:
         return ""
-    protected, placeholders = _protect_code_blocks(text)
+    protected, placeholders = _protect_spans(text)
     protected = _RICH_MATH_BLOCK_RE.sub(_replace_math_block, protected)
     protected = _RICH_MATH_INLINE_RE.sub(_replace_math_inline, protected)
     protected = _replace_dates(protected)
-    protected = _restore_code_blocks(protected, placeholders)
+    protected = _restore_spans(protected, placeholders)
     return protected
 
 # ─────────────────────────────────────────────────────────────
