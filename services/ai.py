@@ -1973,23 +1973,21 @@ _GEMINI_TTS_URL = (
     "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
 )
 
-# Ohang ko'rsatmasi MATN ICHIDA beriladi: bu model `systemInstruction`ni
-# qabul qilmaydi — API "Developer instruction is not enabled for this
-# model" deb 400 qaytaradi.
+# ⚠️ OHANG KO'RSATMASI ATAYLAB YO'Q — Gemini'ga GPT javobi TOZA holda,
+# hech qanday prefiksiz beriladi.
 #
-# Ko'rsatma ovozga O'QILMAYDI — o'lchandi: aynan bir xil matn ko'rsatma
-# bilan 4.96 s, ko'rsatmasiz 5.04 s. Ko'rsatma ~45 ta inglizcha so'z, ya'ni
-# o'qilganda audio ~15 s uzayardi.
+# Bu model sof TTS: u matn generatsiya qilmaydi, nima berilsa shuni o'qiydi.
+# Shuning uchun "tarjima qilma, qisqartirma" degan ko'rsatmalar keraksiz —
+# o'qishdan boshqa qiladigan ishi yo'q. Prefiks esa faqat zarar keltiradi:
 #
-# Matn ham o'zgartirilmaydi: yaratilgan audio gpt-4o-mini-transcribe bilan
-# qaytadan matnga o'girilib solishtirildi — so'zma-so'z mos keldi (tarjima,
-# qisqartirish yoki qo'shilgan so'z yo'q).
-_GEMINI_TTS_STYLE = (
-    "Speak the provided text naturally in Uzbek. Use native Uzbek pronunciation, "
-    "natural conversational intonation, appropriate pauses and emphasis. "
-    "Do not translate, rewrite, summarize, or add any words. "
-    "Read the text exactly as provided.\n\n"
-)
+#   • o'zbekcha ko'rsatma KONTENT deb qabul qilinib ovozga o'qib yuboriladi
+#     (o'lchandi: o'zbekcha prompt to'liq ovozga chiqdi);
+#   • inglizcha ko'rsatma o'qilmaydi, lekin ohangni "o'qib berish"
+#     registriga tortadi — tabiiylik yo'qoladi.
+#
+# Prefikssiz variant eski test kodidagi ohangni beradi, aynan shu yoqqan.
+# Yangi prefiks qo'shishdan oldin ovozni ESHITIB ko'ring, davomiylikni
+# o'lchash yetarli emas — u ohang o'zgarganini ko'rsatmaydi.
 
 # Javob mimeType'i: "audio/l16; rate=24000; channels=1"
 _GEMINI_PCM_RATE_RE = re.compile(r"rate=(\d+)")
@@ -2030,7 +2028,7 @@ async def _gemini_tts(text: str, filename: str) -> Optional[str]:
 
     payload = {
         "contents": [
-            {"parts": [{"text": _GEMINI_TTS_STYLE + text[:_GEMINI_TTS_MAX_CHARS]}]}
+            {"parts": [{"text": text[:_GEMINI_TTS_MAX_CHARS]}]}
         ],
         "generationConfig": {
             "responseModalities": ["AUDIO"],
