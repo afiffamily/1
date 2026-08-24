@@ -311,6 +311,24 @@ important. A shorter answer must still be fully correct — brevity never comes 
 the cost of accuracy.
 """
 
+# 3.2b — Rasm imkoniyati.
+#
+# ⚠️ NEGA SYSTEM PROMPTDA: bu ma'lumot tool TAVSIFIDA ham bor, lekin u
+# yerdagisi model qidiruvni chaqirishga qaror qilgandagina o'qiladi.
+# Foydalanuvchi "rasmini yubor" deganda model ko'pincha umuman tool
+# chaqirmay, "menda bunday imkoniyat yo'q" deb javob yozib qo'yardi —
+# ya'ni mavjud imkoniyatni INKOR qilardi. Bu qator statik, shuning
+# uchun prompt caching buzilmaydi (foydalanuvchiga oid hech narsa yo'q).
+IMAGE_CAPABILITY_NOTE: str = """
+IMAGES — YOU CAN SEND THEM:
+You can put real photos from the internet directly into your chat reply by
+calling `internet_search` with `want_images=true`. Never tell the user you are
+unable to show or send pictures — you are able. A request like "send me its
+photo", "with pictures", "show me what it looks like" is answered with that
+tool, NOT by building a file. Only build a PPTX/PDF when the user explicitly
+asks for a presentation or document.
+"""
+
 # 3.3 — Matematika / fizika / kimyo uchun qat'iy qoidalar
 STRICT_MATH_RULES: str = """
 MATH / PHYSICS / CHEMISTRY — LATEX MANDATORY:
@@ -655,6 +673,46 @@ PRO_PAYLOAD_VERSION = "v1"
 BTN_PRIMARY = "primary"     # asosiy amal (ko'k/urg'uli)
 BTN_SUCCESS = "success"     # ijobiy/tavsiya etilgan (yashil)
 BTN_DANGER = "danger"       # bekor qilish/yopish (qizil)
+
+# ⚠️ "link" (chegarasiz, oddiy havola ko'rinishidagi tugma) — Bot API 10.3.
+# U FAQAT rich xabar ichidagi <tg-button> uchun (RichMessageButton) va FAQAT
+# callback tugmalarida ruxsat etilgan. Oddiy InlineKeyboardButton'da bu
+# qiymat RAD ETILADI va butun xabar yuborilmaydi — shuning uchun
+# handlers/pro.py:btn() uni ATAYLAB qabul qilmaydi.
+BTN_LINK = "link"
+
+# ── INTERNETDAN RASM (Bot API 10.3, rich xabar media bloklari) ──────
+# Model javob ichiga [rasm:N] belgisini qo'yadi, biz uni Telegram o'zi
+# tortib oladigan ![](URL) blokiga almashtiramiz — bot rasmni yuklab
+# olmaydi ham, yuklamaydi ham, ya'ni token ham, vaqt ham sarflanmaydi.
+# ⚠️ Rasm qidiruvi ochiq internetdan keladi va bot hamma yoshdagi
+# foydalanuvchida ishlaydi. ddgs standarti "moderate" — u yetarli emas:
+# sinovda ochiq-sochiq kontent yaratuvchi so'ralganda mos rasm chiqdi.
+# "on" — eng qattiq daraja. Bo'shatish kerak bo'lsa shu qatorni
+# o'zgartiring, kodning boshqa joyiga tegish shart emas.
+SEARCH_IMAGE_SAFESEARCH = "on"
+SEARCH_IMAGE_MAX = 4          # bitta javobga ko'pi bilan shuncha rasm
+SEARCH_IMAGE_CANDIDATES = 10  # DDG'dan shuncha olinadi, o'liklari filtrlanadi
+SEARCH_IMAGE_HEAD_TIMEOUT = 4 # har bir URL uchun HEAD tekshiruvi (soniya)
+# Telegram media blokini o'z serveridan tortadi: havola o'lik bo'lsa BUTUN
+# rich xabar rad etiladi. Shuning uchun chegara — Telegram photo limiti.
+SEARCH_IMAGE_MAX_BYTES = 10 * 1024 * 1024
+# Bir nechta rasm bitta <tg-slideshow> blokiga yig'iladi (chatni cho'zmaydi).
+SEARCH_IMAGE_SLIDESHOW_MIN = 2
+
+# ── FAYL ICHIGA RASM (prezentatsiya/PDF uchun) ──────────────────────
+# Xabardagi rasmdan FARQI: u yerda Telegram URL'ni o'zi tortadi, bu
+# yerda esa rasm PPTX/PDF ICHIGA kirishi kerak, ya'ni baytlari kerak.
+# Shuning uchun bot ularni oldindan yuklab olib, sandbox ish papkasiga
+# `rasm1.jpg`, `rasm2.jpg` ... deb qo'yadi (sandbox'ning o'zi tarmoqqa
+# chiqmaydi — tool tavsifida shunday va'da berilgan).
+FILE_IMAGE_MAX_QUERIES = 6        # bitta hujjatga ko'pi bilan shuncha rasm
+FILE_IMAGE_CANDIDATES = 5         # har so'rov uchun shuncha nomzod sinaladi
+FILE_IMAGE_TIMEOUT = 15           # bitta rasm uchun (soniya)
+FILE_IMAGE_MAX_BYTES = 8 * 1024 * 1024   # yuklab olishning qattiq chegarasi
+# Slaydga 1600px yetib ortadi; kattasi faylni bekorga shishiradi.
+FILE_IMAGE_MAX_SIDE = 1600
+FILE_IMAGE_JPEG_QUALITY = 85
 
 # Premium (animatsion) custom emoji ID'lari. Bular botda ALLAQACHON
 # ishlatilgan va tekshirilgan ID'lar — o'ylab topilgani xato beradi.

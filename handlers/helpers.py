@@ -6,15 +6,33 @@ from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from aiogram.exceptions import TelegramForbiddenError
 
 from core.loader import logger, bot
+from core.config import MAX_MANUAL_RETRIES
 from db import database
 from core.memory import store_failed_request
 
 def make_retry_keyboard(chat_id: int, attempts: int = 0):
-    kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text=f"↻ Qayta so‘rash ({attempts})", callback_data=f"retry:{chat_id}")],
+    """Xato xabari uchun klaviatura.
+
+    Urinishlar tugagach tugma O'CHIRILADI (Bot API 10.3: `disabled`) —
+    ilgari u bosiladigan holda qolib, har bosishda "Maksimal urinish
+    tugadi" ogohlantirishini berardi. Tugmaning o'zi ko'rinib turgani
+    muhim: foydalanuvchi nechta urinish sarflaganini ko'radi.
+
+    ⚠️ `disabled` tugma turi hisoblanadi — callback_data u bilan birga
+    yuborilmaydi (handlers/pro.py:btn izohiga qarang).
+    """
+    exhausted = attempts >= MAX_MANUAL_RETRIES
+    if exhausted:
+        retry_btn = InlineKeyboardButton(
+            text=f"↻ Urinishlar tugadi ({attempts}/{MAX_MANUAL_RETRIES})",
+            disabled={})
+    else:
+        retry_btn = InlineKeyboardButton(
+            text=f"↻ Qayta so‘rash ({attempts})", callback_data=f"retry:{chat_id}")
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [retry_btn],
         [InlineKeyboardButton(text="📨 Adminga xabar", callback_data=f"report:{chat_id}")]
     ])
-    return kb
 
 async def send_error_with_retry(chat_id: int, message_id: int, user_id: int, prompt: str, original_text: str = "", reason: str = None):
     """

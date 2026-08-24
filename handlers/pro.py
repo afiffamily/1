@@ -17,6 +17,7 @@ import html
 import re
 import time
 from datetime import datetime, timezone
+from html import escape as html_escape
 
 from aiogram.types import (
     Message, CallbackQuery, PreCheckoutQuery, LabeledPrice,
@@ -34,6 +35,7 @@ from core.config import (
     MESSAGE_COST_TEXT, MESSAGE_COST_PHOTO, MESSAGE_COST_VOICE, MESSAGE_COST_DOCUMENT,
     REFERRAL_REQUIRED, REFERRAL_REWARD_DAYS, REFERRAL_MAX_REWARDS,
     CUSTOM_EMOJI, MESSAGE_EFFECTS, BTN_PRIMARY, BTN_SUCCESS, BTN_DANGER,
+    BTN_LINK,
 )
 from db import database
 from services import menu as menu_module
@@ -65,15 +67,25 @@ def pe(name: str, fallback: str) -> str:
 
 
 def btn(text: str, callback_data: str, *, style: str | None = None,
-        icon: str | None = None, url: str | None = None) -> InlineKeyboardButton:
+        icon: str | None = None, url: str | None = None,
+        disabled: bool = False) -> InlineKeyboardButton:
     """Rangli/ikonkali tugma quruvchi.
 
     style faqat 'primary' | 'success' | 'danger' bo'lishi mumkin — boshqa
     qiymat Telegram tomonidan rad etiladi va BUTUN xabar yuborilmaydi
-    (empirik tekshirilgan, core/config.py izohiga qarang).
+    (empirik tekshirilgan, core/config.py izohiga qarang). Ayniqsa
+    BTN_LINK ("link") bu yerga TUSHMASLIGI kerak — u faqat rich xabar
+    ichidagi <tg-button> uchun.
+
+    disabled=True (Bot API 10.3) — tugma ko'rinadi, lekin bosilmaydi.
+    ⚠️ `disabled` amalning O'ZI hisoblanadi: Telegram "tugma turini
+    belgilaydigan maydonlardan ANIQ BITTASI bo'lsin" deb talab qiladi,
+    shuning uchun callback_data/url ATAYLAB qo'shilmaydi.
     """
     kwargs = {"text": text}
-    if url:
+    if disabled:
+        kwargs["disabled"] = {}
+    elif url:
         kwargs["url"] = url
     else:
         kwargs["callback_data"] = callback_data
@@ -84,27 +96,95 @@ def btn(text: str, callback_data: str, *, style: str | None = None,
     return InlineKeyboardButton(**kwargs)
 
 
+# ═══════════════════════════════════════════════════════════════════
+#  RICH XABAR ICHIDAGI TUGMALAR (Bot API 10.3)
+# ═══════════════════════════════════════════════════════════════════
+# Oddiy klaviaturadan farqi: bu tugmalar xabar MATNINING ichida turadi,
+# ya'ni javobning kerakli joyiga qo'yish mumkin. Rich markdown ixtiyoriy
+# HTML qabul qiladi, shuning uchun qo'shimcha parser kerak emas.
+_RICH_BTN_ATTRS = {
+    "url": "url", "callback_data": "data", "copy_text": "text",
+    "switch_inline_query": "query", "switch_inline_query_current_chat": "query",
+}
+
+
+def rich_button(label: str, *, type: str = "callback_data",
+                style: str | None = None, **value) -> str:
+    """Bitta <tg-button>. `value` — turga mos yagona qiymat.
+
+    ⚠️ Birinchi parametr ATAYLAB `label`, `text` emas: `copy_text`
+    turining o'z qiymati ham `text=` deb ataladi va ikkalasi to'qnashardi.
+
+    Misollar:
+        rich_button("Pro", type="callback_data", data="pro:open", style=BTN_SUCCESS)
+        rich_button("Nusxa olish", type="copy_text", text="ABC123")
+        rich_button("Tugagan", type="disabled")
+
+    ⚠️ Matn HTML sifatida yoziladi — qochirish (escape) SHART, aks holda
+    javobdagi `<` yoki `&` butun xabarni rad ettiradi.
+    """
+    attrs = [f'type="{html_escape(type, quote=True)}"']
+    if style:
+        attrs.append(f'style="{html_escape(style, quote=True)}"')
+    attr_name = _RICH_BTN_ATTRS.get(type)
+    if attr_name:
+        raw = value.get(attr_name) or value.get("value") or ""
+        attrs.append(f'{attr_name}="{html_escape(str(raw), quote=True)}"')
+    return f"<tg-button {' '.join(attrs)}>{html_escape(label)}</tg-button>"
+
+
+def rich_button_row(buttons: list[str], align: str = "center") -> str:
+    """<tg-button-row> — bir qatorda 1-8 tugma.
+
+    ⚠️ 8 tadan ortiq tugma Telegram tomonidan rad etiladi (butun xabar
+    bilan birga), shuning uchun bu yerda kesib qo'yiladi.
+    """
+    buttons = [b for b in buttons if b][:8]
+    if not buttons:
+        return ""
+    if align not in ("left", "center", "right"):
+        align = "center"
+    return f'<tg-button-row align="{align}">{"".join(buttons)}</tg-button-row>'
+
+
 def _downgrade_kb(kb: InlineKeyboardMarkup | None) -> InlineKeyboardMarkup | None:
     """Klaviaturadan bezak maydonlarini olib tashlaydi (fallback uchun)."""
     if kb is None:
         return None
+
     # ⚠️ switch_inline_query ham KO'CHIRILADI: u tushib qolsa tugmada
     # birorta ham amal maydoni qolmaydi va Telegram BUTUN klaviaturani
     # rad etadi — ya'ni "chekinish" xabarni yo'q qilardi.
-    rows = [[
-        InlineKeyboardButton(
-            text=b.text, callback_data=b.callback_data, url=b.url,
-            switch_inline_query=b.switch_inline_query)
-        for b in row
-    ] for row in kb.inline_keyboard]
-    return InlineKeyboardMarkup(inline_keyboard=rows)
+    #
+    # ⚠️ `disabled` (10.3) ham AYNAN SHU sababdan ko'chiriladi: u tugma
+    # turini belgilaydigan yagona maydon. Tashlab yuborilsa, o'chirilgan
+    # tugma "amalsiz" bo'lib qolib, butun klaviaturani rad ettirardi.
+    def _copy(b: InlineKeyboardButton) -> InlineKeyboardButton:
+        kwargs = {
+            "text": b.text,
+            "callback_data": b.callback_data,
+            "url": b.url,
+            "switch_inline_query": b.switch_inline_query,
+        }
+        disabled = (b.model_extra or {}).get("disabled")
+        if disabled is not None:
+            kwargs = {"text": b.text, "disabled": disabled}
+        return InlineKeyboardButton(**kwargs)
+
+    rows = [[_copy(b) for b in row] for row in kb.inline_keyboard]
+    # force_reply — bezak emas, oqimning bir qismi (foydalanuvchi javob
+    # yozishi kutilyapti), shuning uchun chekinishda ham saqlanadi.
+    extra = {}
+    if (kb.model_extra or {}).get("force_reply"):
+        extra["force_reply"] = True
+    return InlineKeyboardMarkup(inline_keyboard=rows, **extra)
 
 
 _TAG_RE = re.compile(r"<[^>]+>")
 
 
 async def send_rich(target, text: str, kb: InlineKeyboardMarkup | None = None,
-                    effect: str | None = None) -> None:
+                    effect: str | None = None, **extra) -> None:
     """Bezakli xabar yuboradi va HAR QANDAY holatda yetkazib beradi.
 
     Bezaklar (effekt, tugma ranglari, premium emoji) — "bo'lsa yaxshi",
@@ -116,6 +196,12 @@ async def send_rich(target, text: str, kb: InlineKeyboardMarkup | None = None,
         2) effektsiz    (effekt faqat shaxsiy chatda ishlaydi)
         3) rangsiz      (eski mijoz/API bezak maydonlarini bilmasa)
         4) HTML'siz     (oxirgi chora — tekis matn)
+
+    `extra` — qo'shimcha yuborish parametrlari (masalan guruh uchun
+    `ephemeral_message_parameters`). ⚠️ Ular ham bezak hisoblanadi:
+    butun zanjir qo'shimcha BILAN bir marta, keyin BUTUNLAY USIZ yana
+    bir marta o'tiladi. Aks holda API qo'shimchani bilmasa (eski server),
+    xabar hech qachon yetib bormasdi.
     """
     attempts = [
         {"parse_mode": "HTML", "reply_markup": kb, "message_effect_id": effect},
@@ -124,14 +210,18 @@ async def send_rich(target, text: str, kb: InlineKeyboardMarkup | None = None,
         {"reply_markup": _downgrade_kb(kb)},
     ]
     plain = _TAG_RE.sub("", text)
-    for i, kwargs in enumerate(attempts):
-        if effect is None and i == 0:
-            continue                      # effekt yo'q — birinchi urinish ortiqcha
-        try:
-            await target.answer(plain if "parse_mode" not in kwargs else text, **kwargs)
-            return
-        except Exception as exc:
-            logger.debug(f"[Pro] yuborish urinishi {i + 1} muvaffaqiyatsiz: {exc}")
+    rounds = [extra, {}] if extra else [{}]
+    for round_extra in rounds:
+        for i, kwargs in enumerate(attempts):
+            if effect is None and i == 0:
+                continue                  # effekt yo'q — birinchi urinish ortiqcha
+            try:
+                await target.answer(plain if "parse_mode" not in kwargs else text,
+                                    **kwargs, **round_extra)
+                return
+            except Exception as exc:
+                logger.debug(f"[Pro] yuborish urinishi {i + 1} "
+                             f"(extra={bool(round_extra)}) muvaffaqiyatsiz: {exc}")
     logger.error("[Pro] xabar HECH QANDAY ko'rinishda yuborilmadi")
 
 
@@ -668,8 +758,14 @@ _PROMO_PROMPT = (
     "<blockquote><i>Katta-kichik harf farqi yo'q.</i></blockquote>"
 )
 
-_CANCEL_KB = InlineKeyboardMarkup(inline_keyboard=[
-    [btn("✖️ Bekor qilish", "pro:open", style=BTN_DANGER)]])
+# force_reply (Bot API 10.3): tugma joyida qoladi, lekin kiritish maydoni
+# o'zi ochiladi. Bu ikkala oqim ham foydalanuvchidan MATN kutadi (kimga
+# sovg'a / promokod), ilgari esa buni faqat taxmin qilish kerak edi.
+# ⚠️ Telegram: klaviatura TAHRIRLANGANDA force_reply qiymati o'zgarmaydi —
+# shuning uchun u dastlabki so'rov xabaridayoq qo'yiladi.
+_CANCEL_KB = InlineKeyboardMarkup(
+    inline_keyboard=[[btn("✖️ Bekor qilish", "pro:open", style=BTN_DANGER)]],
+    force_reply=True)
 
 
 async def _start_gift(target, state: FSMContext) -> None:

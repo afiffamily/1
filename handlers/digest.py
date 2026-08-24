@@ -54,25 +54,34 @@ _PRO_ONLY = (
 )
 
 
-def _hours_keyboard(selected) -> InlineKeyboardMarkup:
+def _hours_keyboard(selected, *, locked: bool = False) -> InlineKeyboardMarkup:
     """Soat tugmalari — bosilgani qo'shiladi, qayta bosilsa olib tashlanadi.
 
     Tanlanganlari yashil. 24 ta tugma 6 tadan qatorlarga bo'linadi, ya'ni
     klaviatura 4 qator — ekranda bemalol sig'adi.
+
+    `locked=True` (bepul tarif) — panjara ko'rinadi, lekin bosilmaydi
+    (Bot API 10.3: `disabled`). Sabab: "Pro imkoniyati" degan quruq matn
+    nima yo'qotilayotganini ko'rsatmaydi, ko'rinib turgan panjara esa
+    ko'rsatadi. Bosilmagani uchun soxta va'da ham bermaydi.
     """
     chosen = set(selected or ())
     rows, row = [], []
     for h in DIGEST_HOURS:
         faol = h in chosen
         row.append(btn(f"✅{h:02d}" if faol else f"{h:02d}",
-                       f"dg:h:{h}", style=BTN_SUCCESS if faol else None))
+                       f"dg:h:{h}", style=BTN_SUCCESS if faol else None,
+                       disabled=locked))
         if len(row) == _HOURS_PER_ROW:
             rows.append(row)
             row = []
     if row:
         rows.append(row)
 
-    if chosen:
+    if locked:
+        rows.append([btn("💎 Pro tarif", "pro:open", style=BTN_SUCCESS)])
+        rows.append([btn("✖️ Yopish", "dg:close", style=BTN_DANGER)])
+    elif chosen:
         rows.append([btn("✏️ Mavzularni o'zgartirish", "dg:topics", style=BTN_PRIMARY),
                      btn("🧹 Tozalash", "dg:clear")])
         rows.append([btn("🔕 Daydjestni to'xtatish", "dg:off", style=BTN_DANGER)])
@@ -113,8 +122,9 @@ async def handle_digest(message: Message, state: FSMContext):
         return
 
     if (profile.get("plan_type") or "free") == "free":
-        await send_rich(message, _PRO_ONLY, InlineKeyboardMarkup(inline_keyboard=[
-            [btn("💎 Pro tarif", "pro:open", style=BTN_SUCCESS)]]))
+        # Panjara o'chirilgan holda ko'rsatiladi — foydalanuvchi nimadan
+        # mahrumligini KO'RADI, lekin bosa olmaydi.
+        await send_rich(message, _PRO_ONLY, _hours_keyboard(None, locked=True))
         return
 
     hours = _user_hours(profile)
@@ -235,8 +245,11 @@ async def _ask_topics(target, state: FSMContext) -> None:
         "Bitta xabarda yozing.\n\n"
         "<blockquote>Masalan: <i>O'zbekistondagi yangiliklar, dollar kursi, "
         "IT sohasidagi o'zgarishlar</i></blockquote>"
-    ), InlineKeyboardMarkup(inline_keyboard=[
-        [btn("✖️ Bekor qilish", "dg:close", style=BTN_DANGER)]]))
+    # force_reply — foydalanuvchidan matn kutilyapti, kiritish maydoni
+    # o'zi ochilsin (handlers/pro.py:_CANCEL_KB bilan bir xil sabab).
+    ), InlineKeyboardMarkup(
+        inline_keyboard=[[btn("✖️ Bekor qilish", "dg:close", style=BTN_DANGER)]],
+        force_reply=True))
 
 
 async def process_digest_topics(message: Message, state: FSMContext):

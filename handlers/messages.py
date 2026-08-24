@@ -2,6 +2,7 @@ import asyncio
 import time
 import os
 import re
+import json
 import base64
 import html as html_lib
 
@@ -41,7 +42,7 @@ from services.ai import (
     speech_to_text_smart, text_to_speech_smart,
     get_vision_reply, extract_text_from_document,
     clear_chat_history, safe_get_chat_history,
-    build_rich_markdown,
+    build_rich_markdown, embed_images, strip_image_tokens,
 )
 
 router = Router()
@@ -91,7 +92,14 @@ class GeneratingState(StatesGroup):
 
 @router.message(GeneratingState.generating)
 async def busy_handler(message: Message):
-    await message.answer("Iltimos kuting, javob generatsiya qilinmoqda...")
+    # Guruhda bu xabar FAQAT so'rov egasiga ko'rinadi (Bot API 10.3) —
+    # qolganlar uchun bu shovqin, bot esa "spam qilyapti" bo'lib ko'rinadi.
+    try:
+        await message.answer("Iltimos kuting, javob generatsiya qilinmoqda...",
+                             **ephemeral_params(message))
+    except Exception:
+        # Ephemeral qo'llab-quvvatlanmasa ham ogohlantirish yetib borsin.
+        await message.answer("Iltimos kuting, javob generatsiya qilinmoqda...")
 
 
 # --------------------------------------------------
@@ -135,20 +143,85 @@ async def close_http_session() -> None:
         _http_session = None
 
 
-async def _telegram_api_request(method: str, payload: dict):
+# Telegram javobi kelmaganda NIMA bo'lgani noma'lum — xabar yetib borgan
+# ham bo'lishi mumkin. Bu farq hal qiluvchi: "rad etildi" da qayta urinsa
+# bo'ladi, "noma'lum" da esa QAYTA URINISH TAKROR XABAR yaratadi.
+OUTCOME_REJECTED = "rejected"     # Telegram aniq rad etdi (ok:false / 4xx)
+OUTCOME_UNKNOWN = "unknown"       # timeout yoki tarmoq uzildi
+
+
+async def _telegram_api_request(method: str, payload: dict, *,
+                                outcome: list | None = None,
+                                timeout: float | None = None):
+    """Telegram API'ga JSON so'rov.
+
+    `outcome` berilsa — muvaffaqiyatsizlik SABABI shu ro'yxatga yoziladi
+    (OUTCOME_REJECTED / OUTCOME_UNKNOWN). Chaqiruvchi shunga qarab qayta
+    urinish xavfsizmi yoki yo'qligini hal qiladi.
+
+    `timeout` — umumiy sessiya chegarasini (10s) bosib o'tadi. Rasm
+    havolasi bor rich xabarda SHART: Telegram xabarni yaratishdan oldin
+    har bir rasmni O'ZI manba saytdan yuklab oladi va bu 10 soniyadan
+    oson oshadi.
+    """
+    if not BOT_TOKEN:
+        if outcome is not None:
+            outcome.append(OUTCOME_UNKNOWN)
+        return None
+    url = f"https://api.telegram.org/bot{BOT_TOKEN}/{method}"
+    kwargs = {"json": payload}
+    if timeout is not None:
+        kwargs["timeout"] = aiohttp.ClientTimeout(total=timeout, connect=5)
+    try:
+        session = await _get_http_session()
+        async with session.post(url, **kwargs) as resp:
+            data = await resp.json(content_type=None)
+            if resp.status == 200 and data.get("ok"):
+                return data.get("result")
+            # Telegram javob berdi va rad etdi — xabar YARATILMAGAN,
+            # ya'ni boshqa ko'rinishda qayta urinish xavfsiz.
+            logger.debug(f"Telegram API {method} failed: {data}")
+            if outcome is not None:
+                outcome.append(OUTCOME_REJECTED)
+            return None
+    except Exception as e:
+        logger.debug(f"Telegram API {method} exception: {e}")
+        if outcome is not None:
+            outcome.append(OUTCOME_UNKNOWN)
+        return None
+
+
+async def _telegram_api_multipart(method: str, payload: dict, files: dict):
+    """Xuddi _telegram_api_request, lekin YANGI FAYL yuklash bilan.
+
+    Rich xabarga hali `file_id` ga ega bo'lmagan faylni qo'yishning
+    yagona yo'li — multipart/form-data. JSON so'rovi bunga yaramaydi,
+    shuning uchun alohida funksiya (oddiy yo'lni murakkablashtirmaslik
+    uchun ataylab ajratilgan).
+
+    `files`: {"attach_nomi": (fayl_nomi, baytlar)}.
+    """
     if not BOT_TOKEN:
         return None
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/{method}"
     try:
+        form = aiohttp.FormData()
+        for key, value in payload.items():
+            # Ichma-ich obyektlar multipart'da JSON satr sifatida ketadi.
+            form.add_field(key, value if isinstance(value, str) else json.dumps(value))
+        for name, (filename, content) in files.items():
+            form.add_field(name, content, filename=filename,
+                           content_type="application/octet-stream")
+
         session = await _get_http_session()
-        async with session.post(url, json=payload) as resp:
+        async with session.post(url, data=form) as resp:
             data = await resp.json(content_type=None)
             if resp.status == 200 and data.get("ok"):
                 return data.get("result")
-            logger.debug(f"Telegram API {method} failed: {data}")
+            logger.debug(f"Telegram API {method} (multipart) failed: {data}")
             return None
     except Exception as e:
-        logger.debug(f"Telegram API {method} exception: {e}")
+        logger.debug(f"Telegram API {method} (multipart) exception: {e}")
         return None
 
 
@@ -162,6 +235,13 @@ def _balance_markdown_fences(text: str) -> str:
 # build_rich_markdown() matnga <tg-math>/<tg-time> kabi teglar qo'shib,
 # uzunlikni biroz oshiradi.
 MAX_MESSAGE_CHARS = 4000
+
+# Rasm havolasi bor rich xabar uchun alohida chegara. Umumiy sessiya
+# chegarasi 10s — u yengil, tez-tez yuboriladigan draftlar uchun to'g'ri,
+# lekin media bor xabarda Telegram manba saytlardan rasmlarni yuklab
+# olguncha kutish kerak. 10s da uzilib, "yiqildi" deb qayta yuborish
+# aynan TAKROR XABAR nosozligini keltirib chiqargan edi.
+RICH_MEDIA_TIMEOUT = 60.0
 
 
 def _split_for_telegram(text: str, limit: int = MAX_MESSAGE_CHARS) -> list[str]:
@@ -262,6 +342,7 @@ async def _send_rich_draft(
     markdown: str | None = None,
     html_content: str | None = None,
     message_thread_id=None,
+    can_stop: bool = False,
 ):
     payload = {
         "chat_id": chat_id,
@@ -270,7 +351,30 @@ async def _send_rich_draft(
     }
     if message_thread_id:
         payload["message_thread_id"] = message_thread_id
+    if can_stop:
+        # Bot API 10.3: draft ustida "To'xtatish" tugmasi.
+        # keep_on_stop — bosilganda yozilib ulgurgan qism darhol
+        # o'chib ketmaydi. Hujjat aytadi: qismni BUTUNLAY saqlash uchun
+        # baribir yangi xabar yuborish kerak — process_stream_draft()
+        # aynan shuni qiladi.
+        payload["can_stop"] = True
+        payload["keep_on_stop"] = True
     return await _telegram_api_request("sendRichMessageDraft", payload)
+
+
+def ephemeral_params(message: Message) -> dict:
+    """Guruhda — xabarni FAQAT so'rov egasiga ko'rsatish parametrlari.
+
+    Bot API 10.3. Shaxsiy chatda ma'nosi yo'q (u yerda baribir ikki kishi),
+    shuning uchun bo'sh dict qaytadi va chaqiruvchi kod o'zgarmaydi.
+
+    NEGA KERAK: limit tugadi, Pro reklamasi, "iltimos kuting" kabi
+    xabarlar SHAXSIY, lekin guruhda hammaga ko'rinadi — bu botni
+    guruhdan chiqarib yuborishning eng keng tarqalgan sababi.
+    """
+    if message.chat.type == "private" or message.from_user is None:
+        return {}
+    return {"ephemeral_message_parameters": {"receiver_user_id": message.from_user.id}}
 
 
 async def _send_rich_message(
@@ -280,6 +384,8 @@ async def _send_rich_message(
     html_content: str | None = None,
     message_thread_id=None,
     reply_markup=None,
+    outcome: list | None = None,
+    timeout: float | None = None,
 ):
     payload = {
         "chat_id": chat_id,
@@ -293,7 +399,8 @@ async def _send_rich_message(
         payload["reply_markup"] = (
             reply_markup.model_dump(exclude_none=True)
             if hasattr(reply_markup, "model_dump") else reply_markup)
-    return await _telegram_api_request("sendRichMessage", payload)
+    return await _telegram_api_request("sendRichMessage", payload,
+                                       outcome=outcome, timeout=timeout)
 
 
 async def _edit_message_fallback(message: Message, text: str):
@@ -314,6 +421,74 @@ MAX_TELEGRAM_PHOTO_SIZE = 10 * 1024 * 1024
 _PHOTO_EXTENSIONS = (".png", ".jpg", ".jpeg", ".webp")
 
 
+# Bitta rich xabarga sig'adigan natija fayllarining umumiy hajmi. Undan
+# oshsa har bir fayl alohida yuboriladi — bitta ulkan multipart so'rovi
+# timeout bilan yiqilsa BARCHA fayllar birdan yo'qolardi.
+MAX_RICH_BUNDLE_SIZE = 30 * 1024 * 1024
+
+
+async def _send_output_files_rich(chat_id: int, output_files: list,
+                                  message_thread_id=None) -> bool:
+    """Bir nechta natija faylini BITTA rich xabarga yig'ib yuboradi.
+
+    Bot API 10.3: rasm `tg://photo?id=`, hujjat esa `tg://document?id=`
+    havolasi orqali xabar matnining ichiga joylanadi. Foydalanuvchi 4 ta
+    alohida xabar o'rniga bitta tartibli xabar oladi.
+
+    ⚠️ ATAYLAB faqat 2+ fayl uchun: bitta fayl bo'lsa oddiy
+    send_document/send_photo allaqachon eng yaxshi ko'rinishni beradi
+    (native preview, "Saqlash" tugmasi) va yangi yo'lni sinash uchun
+    hech qanday sabab yo'q.
+
+    True — yuborildi; False — chaqiruvchi eski yo'l bilan davom etsin.
+    """
+    if len(output_files) < 2:
+        return False
+    total = sum(len(content) for _, content in output_files)
+    if total > MAX_RICH_BUNDLE_SIZE:
+        return False
+    if any(len(content) > MAX_TELEGRAM_DOCUMENT_SIZE for _, content in output_files):
+        return False
+
+    media, files, blocks = [], {}, []
+    for i, (filename, content) in enumerate(output_files):
+        # `id` faqat A-Z a-z 0-9 _ - dan iborat bo'lishi SHART (API talabi),
+        # shuning uchun fayl nomi emas, tartib raqami ishlatiladi.
+        media_id = f"f{i}"
+        is_photo = (filename.lower().endswith(_PHOTO_EXTENSIONS)
+                    and len(content) <= MAX_TELEGRAM_PHOTO_SIZE)
+        kind = "photo" if is_photo else "document"
+        media.append({"id": media_id,
+                      "media": {"type": kind, "media": f"attach://{media_id}"}})
+        files[media_id] = (filename, content)
+        caption = filename.replace('"', "'")
+        blocks.append(f'![](tg://{kind}?id={media_id} "{caption}")')
+
+    payload = {
+        "chat_id": chat_id,
+        "rich_message": {
+            "markdown": "\n\n".join(blocks),
+            "media": media,
+            "skip_entity_detection": True,
+        },
+    }
+    if message_thread_id:
+        payload["message_thread_id"] = message_thread_id
+
+    result = await _telegram_api_multipart("sendRichMessage", payload, files)
+    if result is None:
+        logger.info("[Fayl] rich to'plam rad etildi — fayllar alohida yuboriladi")
+        return False
+
+    # To'plam yetib bordi: keyingi so'rov uchun oxirgi fayl eslab qolinadi
+    # (alohida yuborish yo'lidagi bilan bir xil mantiq).
+    last_name, last_bytes = output_files[-1]
+    _remember_file(chat_id, last_bytes, last_name, produced=True)
+    logger.info(f"[Fayl] {len(output_files)} ta natija bitta rich xabarda "
+                f"yuborildi (chat={chat_id})")
+    return True
+
+
 async def _send_output_files(chat_id: int, output_files: list) -> None:
     """run_python_sandbox yaratgan fayllarni foydalanuvchiga yuboradi.
 
@@ -327,6 +502,14 @@ async def _send_output_files(chat_id: int, output_files: list) -> None:
     o'zgarish qolardi. Foydalanuvchi buni "bot eslab qololmayapti" deb
     ko'radi va haq bo'ladi.
     """
+    # Avval bitta tartibli rich xabarga urinamiz (2+ fayl bo'lganda).
+    # Rad etilsa — pastdagi eski, fayl-ba-fayl yo'l ishlaydi.
+    try:
+        if await _send_output_files_rich(chat_id, output_files):
+            return
+    except Exception as e:
+        logger.warning(f"[Fayl] rich to'plamda xatolik, alohida yuboriladi: {e}")
+
     last_sent: tuple[str, bytes] | None = None
     for filename, content in output_files:
         if len(content) > MAX_TELEGRAM_DOCUMENT_SIZE:
@@ -446,14 +629,113 @@ EMOJI_ID_BY_TYPE: dict[str, str] = {
 }
 
 
-async def process_stream_draft(message: Message, stream_generator, content_type: str = "text") -> str:
-    """OpenAI oqimini Telegram rich draft va yakuniy rich message ga ulaydi."""
+# --------------------------------------------------
+# ⏹ GENERATSIYANI TO'XTATISH (Bot API 10.3)
+# --------------------------------------------------
+# Foydalanuvchi draft ustidagi "To'xtatish" tugmasini bosganda Telegram
+# `stopped_message_generation` update'ini yuboradi — uning ichida faqat
+# draft_id bo'ladi. main.py dagi outer middleware shu ID bo'yicha
+# tegishli Event'ni ko'taradi, oqim esa darhol uziladi.
+#
+# ⚠️ ATAYLAB oddiy dict: draft bir necha soniya yashaydi, kalit esa
+# `finally` da doim o'chiriladi. Umuman o'chib qolsa ham zarari yo'q —
+# Event kichkina obyekt, lekin sizib ketmasligi uchun quyida tozalanadi.
+_stop_events: dict[int, asyncio.Event] = {}
+
+
+def request_stop(draft_id: int) -> bool:
+    """Berilgan draft uchun to'xtatish signalini beradi. True — topildi."""
+    event = _stop_events.get(draft_id)
+    if event is None:
+        return False
+    event.set()
+    return True
+
+
+async def _next_or_stop(iterator, stop_event: asyncio.Event):
+    """Oqimdan keyingi bo'lakni oladi, lekin to'xtatishni ham kutadi.
+
+    NEGA oddiy `async for` YETARLI EMAS: qidiruv yoki fayl vazifasi
+    ishlayotgan paytda oqimdan 20-30 soniya davomida HECH QANDAY bo'lak
+    kelmasligi mumkin. Oddiy siklda to'xtatish tugmasi shuncha vaqt
+    "o'lik" bo'lib turardi — ya'ni eng kerakli paytda ishlamasdi.
+
+    Qaytaradi: (chunk, stopped, finished).
+    """
+    next_task = asyncio.ensure_future(iterator.__anext__())
+    stop_task = asyncio.ensure_future(stop_event.wait())
+    try:
+        done, _ = await asyncio.wait(
+            {next_task, stop_task}, return_when=asyncio.FIRST_COMPLETED)
+    except asyncio.CancelledError:
+        next_task.cancel()
+        stop_task.cancel()
+        raise
+
+    if stop_task in done:
+        next_task.cancel()
+        # Bekor qilingan task'ning natijasini "o'qib" qo'yamiz, aks holda
+        # asyncio "Task exception was never retrieved" deb ogohlantiradi.
+        try:
+            await next_task
+        except (asyncio.CancelledError, Exception):
+            pass
+        return None, True, False
+
+    stop_task.cancel()
+    try:
+        return next_task.result(), False, False
+    except StopAsyncIteration:
+        return None, False, True
+
+
+# Javobda BITTA qisqa kod bloki bo'lsa — "nusxalash" tugmasi qo'yiladi.
+# copy_text tugmasi Telegram'da 256 belgi bilan cheklangan, undan uzunini
+# yuborish butun xabarni rad ettiradi.
+_CODE_BLOCK_RE = re.compile(r"```[a-zA-Z0-9_+-]*\n(.*?)\n```", re.S)
+_COPY_TEXT_LIMIT = 256
+
+
+def _copy_button_html(text: str) -> str:
+    """Javobga mos "nusxalash" tugmasi (yoki bo'sh satr).
+
+    ⚠️ Bir nechta kod bloki bo'lsa tugma QO'YILMAYDI: qaysi birini
+    nusxalashi noaniq bo'lib qoladi, noaniq tugma esa tugmasizdan yomon.
+    """
+    blocks = _CODE_BLOCK_RE.findall(text)
+    if len(blocks) != 1:
+        return ""
+    snippet = blocks[0].strip()
+    if not snippet or len(snippet) > _COPY_TEXT_LIMIT:
+        return ""
+    return pro_module.rich_button_row([
+        pro_module.rich_button("📋 Nusxa olish", type="copy_text", text=snippet),
+    ], align="right")
+
+
+async def process_stream_draft(message: Message, stream_generator, content_type: str = "text",
+                               images: list | None = None) -> str:
+    """OpenAI oqimini Telegram rich draft va yakuniy rich message ga ulaydi.
+
+    `images` — services/ai.py topib bergan internet rasmlari ro'yxati.
+    Model javob matnida [rasm:N] belgisini qoldirgan bo'lsa, u shu yerda
+    haqiqiy media blokiga almashtiriladi (bot rasmni yuklab olmaydi —
+    havolani Telegram o'zi tortadi).
+    """
     full_text = ""
     chunk_buffer = ""
     draft_id = abs(hash((message.chat.id, message.message_id, time.time_ns()))) % 2_147_483_647 or 1
     message_thread_id = getattr(message, "message_thread_id", None)
+    # ⚠️ IKKI XIL TALAB, ATAYLAB AJRATILGAN:
+    #   * sendRichMessageDraft — Telegram FAQAT shaxsiy chatga ruxsat
+    #     beradi ("target private chat"), shuning uchun animatsiya va
+    #     to'xtatish tugmasi guruhda yo'q;
+    #   * sendRichMessage — guruh/superguruhda ham ishlaydi.
+    # Ilgari ikkalasi bitta bayroqda edi va guruhdagi yakuniy javob
+    # bezaksiz ketardi — ya'ni jadval, yig'iladigan manbalar va
+    # internetdan olingan rasmlar guruhda umuman ko'rinmasdi.
     using_rich_draft = message.chat.type == "private"
-    is_private_chat = using_rich_draft
+    can_send_rich = True
     fallback_message = None
     last_push = 0.0
 
@@ -506,6 +788,7 @@ async def process_stream_draft(message: Message, stream_generator, content_type:
                         message.chat.id, draft_id,
                         html_content=thinking_html,
                         message_thread_id=message_thread_id,
+                        can_stop=True,
                     )
                     if res is None:
                         rich_draft_failures += 1
@@ -554,7 +837,12 @@ async def process_stream_draft(message: Message, stream_generator, content_type:
         # Oraliq ko'rinish ham Telegram chegarasiga sig'ishi kerak: uzun
         # javobda har bir push rad etilib, oqim "muzlab" qolardi. Yakuniy
         # matn baribir to'liq, bo'laklarga bo'linib yuboriladi (pastda).
-        display_text = current_text if final else current_text + " ✍️"
+        # ⚠️ [rasm:N] — bu MODEL uchun ichki belgi, foydalanuvchi uni
+        # ko'rmasligi kerak. Yakuniy xabarda u media blokiga aylanadi,
+        # lekin oqim paytida xom holda ekranda turib qolardi.
+        display_text = strip_image_tokens(current_text)
+        if not final:
+            display_text += " ✍️"
         if len(display_text) > MAX_MESSAGE_CHARS:
             display_text = display_text[:MAX_MESSAGE_CHARS - 1] + "…"
         safe_markdown = _balance_markdown_fences(display_text)
@@ -564,6 +852,7 @@ async def process_stream_draft(message: Message, stream_generator, content_type:
                 message.chat.id, draft_id,
                 markdown=safe_markdown,
                 message_thread_id=message_thread_id,
+                can_stop=True,
             )
             if result is not None:
                 return
@@ -578,8 +867,22 @@ async def process_stream_draft(message: Message, stream_generator, content_type:
         if fallback_message is not None:
             await _edit_message_fallback(fallback_message, safe_markdown)
 
+    # To'xtatish tugmasi shu draft'ga bog'lanadi.
+    stop_requested = asyncio.Event()
+    _stop_events[draft_id] = stop_requested
+    stopped = False
+    stream_iter = stream_generator.__aiter__()
+
     try:
-        async for chunk in stream_generator:
+        while True:
+            chunk, was_stopped, finished = await _next_or_stop(stream_iter, stop_requested)
+            if was_stopped:
+                stopped = True
+                logger.info(f"[Stop] foydalanuvchi generatsiyani to'xtatdi "
+                            f"(chat={message.chat.id}, draft={draft_id})")
+                break
+            if finished:
+                break
             if not chunk:
                 continue
 
@@ -624,6 +927,14 @@ async def process_stream_draft(message: Message, stream_generator, content_type:
                 chunk_buffer = ""
 
     finally:
+        _stop_events.pop(draft_id, None)
+        if stopped:
+            # OpenAI oqimini ham yopamiz — aks holda so'rov fonda davom
+            # etib, TO'XTATILGAN javob uchun ham token hisoblanardi.
+            try:
+                await stream_generator.aclose()
+            except Exception:
+                pass
         stop_animation.set()
         anim_task.cancel()
         try:
@@ -639,25 +950,77 @@ async def process_stream_draft(message: Message, stream_generator, content_type:
 
     clean_text = full_text.replace("[NO_BUTTON]", "").strip()
     if clean_text:
-        # Har bir bo'lak uchun uchta pog'ona: rich xabar → kutish xabarini
-        # tahrirlash (faqat birinchisi) → oddiy yangi xabar. Pastki
-        # pog'onalar Markdown'siz ham urinadi, shuning uchun javob
-        # "yo'qolib qolishi" uchun uchalasi ham yiqilishi kerak.
-        for idx, part in enumerate(_split_for_telegram(clean_text)):
-            if is_private_chat:
+        parts = _split_for_telegram(clean_text)
+        # "Nusxa olish" tugmasi FAQAT javob bitta bo'lakka sig'ganda.
+        # Sabab: _split_for_telegram() bo'lak o'rtasida qolgan kod blokini
+        # yopib, keyingisida qayta ochadi — ya'ni bo'lingan javobda tugma
+        # kodning YARMINI nusxalab, foydalanuvchini chalg'itardi.
+        # To'xtatilgan javobda ham tugma yo'q: u tugallanmagan.
+        buttons_html = ("" if (stopped or len(parts) != 1)
+                        else _copy_button_html(clean_text))
+
+        # Har bir bo'lak uchun pog'onalar:
+        #   1) rich xabar — rasm/tugma bilan
+        #   2) rich xabar — bezaksiz (rasm havolasi o'lik bo'lsa Telegram
+        #      BUTUN xabarni rad etadi; javob bezakdan muhimroq)
+        #   3) kutish xabarini tahrirlash (faqat birinchi bo'lak)
+        #   4) oddiy yangi xabar
+        # Javob "yo'qolib qolishi" uchun to'rttasi ham yiqilishi kerak.
+        for idx, part in enumerate(parts):
+            base_md = build_rich_markdown(part)
+            plain_md = strip_image_tokens(base_md)
+            rich_md = embed_images(base_md, images or [])
+            if buttons_html:
+                rich_md += "\n\n" + buttons_html
+
+            if can_send_rich:
+                outcome: list = []
+                has_media = rich_md != plain_md
                 sent = await _send_rich_message(
                     message.chat.id,
-                    markdown=build_rich_markdown(part),
+                    markdown=rich_md,
                     message_thread_id=message_thread_id,
+                    outcome=outcome,
+                    # ⚠️ Rasm bo'lsa Telegram xabarni yaratishdan OLDIN har
+                    # bir havolani manba saytdan O'ZI yuklab oladi — bu
+                    # umumiy 10s chegarasidan oson oshadi.
+                    timeout=RICH_MEDIA_TIMEOUT if has_media else None,
                 )
                 if sent is not None:
                     continue
 
-            if idx == 0 and fallback_message is not None:
-                if await _edit_message_fallback(fallback_message, part) is not None:
+                # ⚠️ QAYTA URINISH FAQAT ANIQ RAD ETILGANDA. Timeout yoki
+                # uzilishda xabar YETIB BORGAN bo'lishi mumkin — o'shanda
+                # ikkinchi marta yuborish foydalanuvchiga BIR XIL javobni
+                # ikki marta ko'rsatardi (aynan shu nosozlik kuzatilgan:
+                # birinchisi rasmli, ikkinchisi rasmsiz).
+                if OUTCOME_UNKNOWN in outcome:
+                    logger.warning(
+                        "[Rich] javob kelmadi (timeout) — xabar yetib borgan "
+                        "bo'lishi mumkin, TAKROR yuborilmaydi")
                     continue
 
-            await _answer_plain(message, part)
+                # Aniq rad etildi: sababi deyarli har doim media havolasi
+                # yoki tugma. Ikkalasisiz qayta urinamiz.
+                if has_media:
+                    logger.info("[Rich] bezakli xabar rad etildi — "
+                                "rasm/tugmasiz qayta urinilmoqda")
+                    plain_outcome: list = []
+                    sent = await _send_rich_message(
+                        message.chat.id,
+                        markdown=plain_md,
+                        message_thread_id=message_thread_id,
+                        outcome=plain_outcome,
+                    )
+                    if sent is not None or OUTCOME_UNKNOWN in plain_outcome:
+                        continue
+
+            fallback_text = strip_image_tokens(part)
+            if idx == 0 and fallback_message is not None:
+                if await _edit_message_fallback(fallback_message, fallback_text) is not None:
+                    continue
+
+            await _answer_plain(message, fallback_text)
 
     return clean_text
 
@@ -752,7 +1115,9 @@ async def _answer_with_pro_button(message: Message, text: str, offer: bool) -> N
             [pro_module.btn("💎 Pro tarifga o'tish", "pro:open",
                             style=pro_module.BTN_SUCCESS)],
         ])
-    await pro_module.send_rich(message, text, kb)
+    # Guruhda limit/tarif xabari — SHAXSIY ma'lumot: qancha ball qolgani
+    # va qaysi tarifda ekani hammaga ko'rinmasligi kerak (Bot API 10.3).
+    await pro_module.send_rich(message, text, kb, **ephemeral_params(message))
 
 
 async def _after_file_task(message: Message, quota_box: list, produced_files: bool) -> None:
@@ -852,9 +1217,14 @@ _FEATURE_LABELS: dict[str, tuple[str, int]] = {
 async def _send_limit_reached_message(message: Message, quota: dict, feature: str | None = None):
     if quota.get("banned"):
         try:
-            await message.answer("🚫 Siz botdan foydalanish huquqidan mahrum qilingansiz.")
+            # Guruhda bloklanganini butun guruhga e'lon qilish shart emas.
+            await message.answer("🚫 Siz botdan foydalanish huquqidan mahrum qilingansiz.",
+                                 **ephemeral_params(message))
         except Exception:
-            pass
+            try:
+                await message.answer("🚫 Siz botdan foydalanish huquqidan mahrum qilingansiz.")
+            except Exception:
+                pass
         return
 
     used = quota.get("used", quota.get("limit", 0))
@@ -1028,6 +1398,14 @@ async def handle_start(message: Message, state: FSMContext, command: CommandObje
 _PENDING_FILE_TTL = 10 * 60    # keyingi matnli xabarlarga biriktirish oynasi
 _INSTRUCTION_WAIT = 12.0       # izohsiz fayldan keyin ko'rsatmani kutish
 _PENDING_FILE_MAX = 30         # ponytail: RAM chegarasi, kerak bo'lsa Redis'ga ko'chiriladi
+# Eslab qolingan fayl FAQAT davomiy so'rovga biriktiriladi. Davomi doim
+# qisqa bo'ladi ("endi PDF qil", "sarlavhani o'zgartir"); uzun xabar esa
+# to'liq YANGI topshiriq (tayyor prezentatsiya spetsifikatsiyasi va h.k.).
+# Uzun so'rovga eski faylni biriktirish real nosozlikka olib kelgan edi:
+# model "bu sen yaratgan fayl, davom ettir" izohini o'qib, yangi hujjat
+# yasash o'rniga eskisini tekshirish bilan barcha raundlarni sarflab,
+# oxirida foydalanuvchiga faylsiz, xom matnli javob yozib qo'ygan.
+_PENDING_FOLLOWUP_MAX_CHARS = 400
 _pending_files: dict[int, dict] = {}
 
 
@@ -1062,6 +1440,13 @@ def _remember_file(chat_id: int, file_bytes: bytes, file_name: str,
     rec = _pending_files.setdefault(chat_id, {})
     rec.update({"ts": time.time(), "bytes": file_bytes, "name": file_name,
                 "produced": produced})
+
+
+def _pending_for_request(chat_id: int, text: str) -> dict | None:
+    """Shu so'rovga eslab qolingan fayl biriktiriladimi?"""
+    if len(text) > _PENDING_FOLLOWUP_MAX_CHARS:
+        return None
+    return _get_pending_file(chat_id)
 
 
 def _capture_instruction(chat_id: int, text: str) -> bool:
@@ -1269,7 +1654,7 @@ async def _process_merged_text(chat_id: int, buf: dict, state: FSMContext):
         # ══════════════════════════════════════════════════════════════
         # Yaqinda fayl yuborilgan bo'lsa, uni shu so'rovga ham biriktiramiz —
         # "endi buni PDF qilib ber" kabi davomiy so'rovlar shu bilan ishlaydi.
-        pending = _get_pending_file(chat_id)
+        pending = _pending_for_request(chat_id, merged_text)
         prompt_text, file_kwargs = merged_text, {}
         if pending:
             note = pending_file_note(pending['name'], earlier=True,
@@ -1282,17 +1667,27 @@ async def _process_merged_text(chat_id: int, buf: dict, state: FSMContext):
 
         output_files: list = []
         file_quota_box: list = []
+        images: list = []
         stream_gen = get_gpt_reply(chat_id, prompt_text, user_id=user_id,
                                    output_files=output_files,
                                    file_quota_out=file_quota_box,
+                                   images_out=images,
                                    is_pro=_is_pro(quota),
                                    tg_name=last_message.from_user.full_name,
                                    **file_kwargs)
-        full_reply = await process_stream_draft(last_message, stream_gen)
+        full_reply = await process_stream_draft(last_message, stream_gen, images=images)
 
         if output_files:
             await _send_output_files(chat_id, output_files)
         await _after_file_task(last_message, file_quota_box, bool(output_files))
+
+        # ⚠️ HECH NARSA YETKAZILMAGAN bo'lsa ball qaytariladi. Bu holat
+        # ilgari jimgina o'tib ketardi (xato ham otilmaydi, javob ham
+        # yo'q — ball esa yechilgan). Endi u aniq yopildi va bu ayni
+        # paytda "To'xtatish" tugmasining ham to'g'ri xatti-harakati:
+        # foydalanuvchi bir harf ham ko'rmasdan to'xtatsa, pul olinmaydi.
+        if not full_reply and not output_files:
+            await _refund_quota(user_id, text_cost, quota)
 
         if full_reply:
             notify_watchers(user_id, last_message.from_user.username, "out", text=full_reply)
@@ -1380,6 +1775,7 @@ async def handle_research(message: Message, state: FSMContext,
     await state.set_state(GeneratingState.generating)
 
     output_files: list = []
+    images: list = []
     try:
         stream_gen = get_gpt_reply(
             chat_id, f"Chuqur tadqiqot mavzusi: {topic[:1000]}",
@@ -1388,10 +1784,12 @@ async def handle_research(message: Message, state: FSMContext,
             # allaqachon to'langan, ikki marta yechish adolatsiz bo'lardi.
             user_id=None,
             output_files=output_files,
+            images_out=images,
             is_pro=True,
             research=True,
         )
-        full_reply = await process_stream_draft(message, stream_gen, content_type="search")
+        full_reply = await process_stream_draft(message, stream_gen,
+                                                content_type="search", images=images)
 
         if output_files:
             await _send_output_files(chat_id, output_files)
@@ -1587,6 +1985,7 @@ async def handle_document(message: Message, state: FSMContext):
         prompt = f"{body}\n\nFoydalanuvchi so'rovi: {caption}"
         output_files: list = []
         file_quota_box: list = []
+        images: list = []
         stream_gen = get_gpt_reply(
             chat_id, prompt,
             user_id=user_id,
@@ -1594,14 +1993,21 @@ async def handle_document(message: Message, state: FSMContext):
             input_filename=file_name,
             output_files=output_files,
             file_quota_out=file_quota_box,
+            images_out=images,
             is_pro=_is_pro(quota),
             tg_name=message.from_user.full_name,
         )
-        full_reply = await process_stream_draft(message, stream_gen, content_type="document")
+        full_reply = await process_stream_draft(message, stream_gen,
+                                                content_type="document", images=images)
 
         if output_files:
             await _send_output_files(chat_id, output_files)
         await _after_file_task(message, file_quota_box, bool(output_files))
+
+        # Hech narsa yetkazilmadi — ball qaytariladi (to'xtatish tugmasi
+        # bosilgan yoki model bo'sh javob qaytargan holat).
+        if not full_reply and not output_files:
+            await _refund_quota(user_id, MESSAGE_COST_DOCUMENT, quota)
 
         if full_reply:
             notify_watchers(user_id, message.from_user.username, "out", text=full_reply)
@@ -1681,16 +2087,26 @@ async def handle_voice(message: Message, state: FSMContext):
         # get_openai_reply() ularni SYSTEM promptga o'zi qo'shadi (services/ai.py).
         output_files: list = []
         file_quota_box: list = []
+        images: list = []
         stream_gen = get_gpt_reply(chat_id, user_text, user_id=user_id,
                                    output_files=output_files,
                                    file_quota_out=file_quota_box,
+                                   images_out=images,
                                    is_pro=_is_pro(quota),
                                    tg_name=message.from_user.full_name)
-        full_reply_text = await process_stream_draft(message, stream_gen, content_type="voice")
+        full_reply_text = await process_stream_draft(message, stream_gen,
+                                                     content_type="voice", images=images)
 
         if output_files:
             await _send_output_files(chat_id, output_files)
         await _after_file_task(message, file_quota_box, bool(output_files))
+
+        # Javob umuman chiqmadi — ovoz ham sintez qilinmaydi, ball
+        # qaytariladi va shu yerda to'xtaymiz (bo'sh matnni TTS'ga
+        # yuborish faqat keraksiz xato beradi).
+        if not full_reply_text and not output_files:
+            await _refund_quota(user_id, MESSAGE_COST_VOICE, quota)
+            return
 
         if full_reply_text:
             notify_watchers(user_id, message.from_user.username, "out", text=full_reply_text)

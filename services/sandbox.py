@@ -143,16 +143,36 @@ def _collect_output_files(output_dir: Path) -> Tuple[List[Tuple[str, bytes]], Li
     return files, warnings
 
 
+def _safe_extra_name(name: str) -> str:
+    """Qo'shimcha fayl nomini xavfsiz holatga keltiradi.
+
+    ⚠️ Bu nomlar model chaqirig'idan kelib chiqadi (u qancha rasm
+    so'raganiga qarab), shuning uchun ular ISHONCHSIZ chegara: `..` yoki
+    `/` ish papkasidan tashqariga yozib yuborishi mumkin edi. Faqat
+    fayl nomining o'zi olinadi va ruxsat etilgan belgilar qoldiriladi.
+    """
+    base = os.path.basename(name.replace("\\", "/"))
+    cleaned = "".join(c for c in base if c.isalnum() or c in "._-")[:64]
+    return cleaned or "file.bin"
+
+
 async def run_in_sandbox(
     code: str,
     input_file_bytes: Optional[bytes] = None,
     input_filename: Optional[str] = None,
+    extra_files: Optional[dict] = None,
 ) -> SandboxResult:
     """Kodni vaqtinchalik, tozalangan muhitda bajaradi.
 
     Kirish fayli (bo'lsa) ish papkasida `input.<kengaytma>` nomi bilan
     turadi. Kod `output/` papkasiga yozgan barcha fayllar o'qib
     qaytariladi. Papka har qanday holatda (xato/timeout ham) o'chiriladi.
+
+    `extra_files` — {nom: baytlar}: ish papkasiga oldindan qo'yiladigan
+    qo'shimcha fayllar (masalan internetdan yuklab olingan `rasm1.jpg`).
+    Bu tarmoqqa chiqmasdan rasm ishlatishning yagona yo'li: sandbox'ga
+    "internetga chiqmang" deb aytilgan, shuning uchun kerakli fayllar
+    unga TAYYOR holda beriladi.
     """
     if not code or not code.strip():
         return SandboxResult(success=False, traceback="Bo'sh kod yuborildi.")
@@ -175,14 +195,28 @@ async def run_in_sandbox(
             ext = "".join(c for c in ext if c.isalnum())[:10] or "bin"
             (work_dir / f"input.{ext}").write_bytes(input_file_bytes)
 
+        for raw_name, content in (extra_files or {}).items():
+            if not content:
+                continue
+            (work_dir / _safe_extra_name(raw_name)).write_bytes(content)
+
         (work_dir / "script.py").write_text(code, encoding="utf-8")
 
         # `-s -E`: foydalanuvchi site-packages va muhit o'zgaruvchilari
         # e'tiborga olinmaydi. `-I` ISHLATILMAYDI, chunki u skript papkasini
         # ham sys.path'dan olib tashlaydi va yordamchi `docgen` moduli
         # import qilinmay qoladi.
+        #
+        # `-X utf8` MAJBURIY: `-E` barcha PYTHON* o'zgaruvchilarini,
+        # jumladan yuqorida qo'yilgan PYTHONIOENCODING'ni ham e'tiborsiz
+        # qoldiradi. Linuxda LANG=C.UTF-8 qutqaradi, Windowsda esa bola
+        # jarayon ANSI kod sahifasiga (cp1251) tushib qoladi va o'zbekcha
+        # `ʻ` yoki emoji chop etilishi UnicodeEncodeError bilan yiqiladi —
+        # model esa buni o'z kodining xatosi deb o'ylab, fayl yaratish
+        # raundlarini behuda sarflaydi. Bu bayroq env emas, shuning uchun
+        # `-E` uni bosa olmaydi.
         proc = await asyncio.create_subprocess_exec(
-            sys.executable, "-s", "-E", "script.py",
+            sys.executable, "-s", "-E", "-X", "utf8", "script.py",
             cwd=str(work_dir),
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,

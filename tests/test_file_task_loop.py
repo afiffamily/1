@@ -96,8 +96,12 @@ class FakeSandbox:
         self.results = list(results)
         self.calls = []
 
-    async def run(self, code, input_file_bytes=None, input_filename=None):
+    # ⚠️ Imzo haqiqiy run_in_sandbox() bilan bir xil bo'lishi SHART —
+    # `extra_files` (hujjat ichiga qo'yiladigan rasmlar) ham shu yerda.
+    async def run(self, code, input_file_bytes=None, input_filename=None,
+                  extra_files=None):
         self.calls.append((code, input_file_bytes, input_filename))
+        self.extra_files = extra_files
         return self.results.pop(0)
 
 

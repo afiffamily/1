@@ -107,11 +107,25 @@ async def main():
         await M._send_output_files(CHAT, [("katta.bin", b"x" * (MAX_TELEGRAM_DOCUMENT_SIZE + 1))])
         assert M._get_pending_file(CHAT) is None
         print("[7] Telegram chegarasidan katta fayl eslab qolinmadi OK")
+
+        # ═══════════════════════════════════════════════════════════
+        # 8) UZUN SO'ROV — DAVOMI EMAS, YANGI TOPSHIRIQ
+        #    Haqiqiy shikoyat: foydalanuvchi tayyor prezentatsiya
+        #    spetsifikatsiyasini (˜7000 belgi) yubordi, botning oldingi
+        #    .pptx'i unga biriktirildi va model yangi hujjat yasash o'rniga
+        #    eskisini tekshirish bilan raundlarni sarflab, faylsiz javob
+        #    qaytardi.
+        # ═══════════════════════════════════════════════════════════
+        M.clear_pending_file(CHAT)
+        await M._send_output_files(CHAT, [("taqdimot.pptx", b"PPTX")])
+        assert M._pending_for_request(CHAT, "endi PDF qilib ber") is not None
+        assert M._pending_for_request(CHAT, "A" * 5000) is None,             "uzun yangi topshiriqqa eski fayl biriktirildi"
+        print("[8] uzun so'rovga eski fayl biriktirilmadi OK")
     finally:
         M.bot = real_bot
         M.clear_pending_file(CHAT)
 
-    print("\nfayl davomiyligi: barcha tekshiruvlar o'tdi (7/7).")
+    print("\nfayl davomiyligi: barcha tekshiruvlar o'tdi (8/8).")
 
 
 if __name__ == "__main__":

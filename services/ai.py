@@ -12,6 +12,7 @@ from contextlib import AsyncExitStack
 from datetime import datetime, timezone, timedelta
 from typing import List, Dict, Optional
 from html import escape as html_escape
+from urllib.parse import urlparse
 
 from ddgs import DDGS
 from openai import NotFoundError, RateLimitError
@@ -29,7 +30,13 @@ try:
         GPT_MODEL, MODEL_FALLBACKS, CONTEXT_WINDOW, CONTEXT_WINDOW_PRO,
         OPENAI_API_KEY, GEMINI_API_KEY, GEMINI_TTS_MODEL, GEMINI_TTS_VOICE,
         REQUEST_TIMEOUT, CONCISE_INSTRUCTION, STRICT_MATH_RULES,
+        IMAGE_CAPABILITY_NOTE,
         build_system_prompt, build_request_params, pick_reasoning_effort,
+        SEARCH_IMAGE_MAX, SEARCH_IMAGE_CANDIDATES, SEARCH_IMAGE_HEAD_TIMEOUT,
+        SEARCH_IMAGE_SAFESEARCH,
+        SEARCH_IMAGE_MAX_BYTES, SEARCH_IMAGE_SLIDESHOW_MIN,
+        FILE_IMAGE_MAX_QUERIES, FILE_IMAGE_CANDIDATES, FILE_IMAGE_TIMEOUT,
+        FILE_IMAGE_MAX_BYTES, FILE_IMAGE_MAX_SIDE, FILE_IMAGE_JPEG_QUALITY,
     )
 except ImportError:
     import os
@@ -39,11 +46,24 @@ except ImportError:
     GEMINI_TTS_VOICE = "Kore"
     CONCISE_INSTRUCTION = ""
     STRICT_MATH_RULES = ""
+    IMAGE_CAPABILITY_NOTE = ""
     GPT_MODEL = "gpt-4o-mini"
     MODEL_FALLBACKS = []
     REQUEST_TIMEOUT = 60.0
     CONTEXT_WINDOW = 12
     CONTEXT_WINDOW_PRO = 24
+    SEARCH_IMAGE_MAX = 4
+    SEARCH_IMAGE_CANDIDATES = 10
+    SEARCH_IMAGE_HEAD_TIMEOUT = 4
+    SEARCH_IMAGE_MAX_BYTES = 10 * 1024 * 1024
+    SEARCH_IMAGE_SLIDESHOW_MIN = 2
+    SEARCH_IMAGE_SAFESEARCH = "on"
+    FILE_IMAGE_MAX_QUERIES = 6
+    FILE_IMAGE_CANDIDATES = 5
+    FILE_IMAGE_TIMEOUT = 15
+    FILE_IMAGE_MAX_BYTES = 8 * 1024 * 1024
+    FILE_IMAGE_MAX_SIDE = 1600
+    FILE_IMAGE_JPEG_QUALITY = 85
 
     def build_system_prompt() -> str:
         return "You are a helpful assistant."
@@ -208,16 +228,162 @@ def _replace_dates(text: str) -> str:
     return text
 
 
+# ─────────────────────────────────────────────────────────────
+# 📑 YIG'ILADIGAN MANBALAR VA IXCHAM JADVAL (Bot API 10.3)
+# ─────────────────────────────────────────────────────────────
+
+# ⚠️ Telegram hujjatida bu atribut IKKI XIL yozilgan:
+# RichBlockExpandableBlockQuotation tavsifida — `collapsed`, HTML teglari
+# ro'yxatidagi ishchi MISOLDA esa — `<blockquote expandable>`. Misolga
+# ishondik (10.2 gacha ham aynan `expandable` edi). Jonli sinovda quote
+# ochilmasa yoki xabar rad etilsa — FAQAT shu qatorni `collapsed` ga
+# almashtiring, boshqa joyga tegish shart emas.
+_EXPANDABLE_ATTR = "expandable"
+
+# Model javob oxirida manbalarni "MANBA:" sarlavhasi ostida ro'yxat qilib
+# beradi (_SYNTHESIS_SYSTEM shuni buyuradi). Uzun qidiruv javoblarida bu
+# ro'yxat ekranning yarmini egallaydi — yig'ib qo'yamiz.
+_SOURCES_HEADING_RE = re.compile(
+    r"^\s*(?:\*\*|__)?\s*(?:[\U0001F300-\U0001FAFF☀-➿]\s*)?"
+    r"(?:foydalanilgan\s+)?(?:manba(?:lar)?|источник\w*|sources?)\s*:?\s*"
+    r"(?:\*\*|__)?\s*:?\s*$",
+    re.IGNORECASE)
+_SOURCE_ITEM_RE = re.compile(r"^\s*[-*+]\s*\[([^\]]+)\]\(\s*(\S+?)\s*\)\s*$")
+# Kamida shuncha manba bo'lsagina yig'amiz — bitta havolani yashirishning
+# ma'nosi yo'q, aksincha uni topish qiyinlashadi.
+_SOURCES_MIN = 2
+
+
+def _collapse_sources(text: str) -> str:
+    """Javob OXIRIDAGI manbalar ro'yxatini yig'iladigan sitataga o'raydi.
+
+    ⚠️ ATAYLAB faqat matn oxiridagi blok: o'rtadagi ro'yxat javobning
+    mantiqiy qismi bo'lishi mumkin, uni yashirish ma'noni buzadi.
+
+    ⚠️ Bu funksiya _restore_spans() dan KEYIN, ya'ni havolalar haqiqiy
+    holatda bo'lganda chaqiriladi — href atributiga token emas, URL
+    tushishi kerak.
+    """
+    lines = text.rstrip().split("\n")
+    items: list[tuple[str, str]] = []
+    idx = len(lines) - 1
+
+    # Oxiridan yuqoriga: ro'yxat elementlari va bo'sh qatorlarni yig'amiz.
+    while idx >= 0:
+        line = lines[idx]
+        if not line.strip():
+            idx -= 1
+            continue
+        m = _SOURCE_ITEM_RE.match(line)
+        if not m:
+            break
+        items.append((m.group(1).strip(), m.group(2).strip()))
+        idx -= 1
+
+    if len(items) < _SOURCES_MIN or idx < 0:
+        return text
+    if not _SOURCES_HEADING_RE.match(lines[idx]):
+        return text
+
+    items.reverse()
+    body = "<br>".join(
+        f'<a href="{html_escape(url, quote=True)}">{html_escape(name)}</a>'
+        for name, url in items
+    )
+    quote = (f"<blockquote {_EXPANDABLE_ATTR}>📚 Manbalar ({len(items)} ta)"
+             f"<br>{body}</blockquote>")
+    return "\n".join(lines[:idx]).rstrip() + "\n\n" + quote
+
+
+# GFM jadvali → <table compact>. Ixcham rejim (10.3) katakchalar orasidagi
+# bo'shliqni kichraytiradi — telefonda 3-4 ustunli jadval endi ekranga
+# sig'adi. Markdown sintaksisida bunday atribut yo'q, shuning uchun
+# jadvalning O'ZI HTML'ga o'giriladi.
+_TABLE_ROW_RE = re.compile(r"^\s*\|(.+)\|\s*$")
+_TABLE_SEP_RE = re.compile(r"^\s*\|[\s:|-]+\|\s*$")
+_TABLE_MAX_COLS = 20        # Telegram chegarasi
+# Katak ichida FAQAT inline formatlash ruxsat etilgan (hujjat talabi).
+_CELL_BOLD_RE = re.compile(r"\*\*(.+?)\*\*|__(.+?)__")
+_CELL_ITALIC_RE = re.compile(r"(?<![\*_\w])[\*_](?!\s)(.+?)(?<!\s)[\*_](?![\*_\w])")
+_CELL_CODE_RE = re.compile(r"`([^`]+)`")
+_CELL_STRIKE_RE = re.compile(r"~~(.+?)~~")
+_CELL_LINK_RE = re.compile(r"\[([^\]]+)\]\(\s*(\S+?)\s*\)")
+
+
+def _cell_html(cell: str) -> str:
+    """Katak matnini xavfsiz HTML'ga o'giradi (faqat inline formatlash)."""
+    out = html_escape(cell.strip())
+    # Tartib muhim: havola ichidagi matn ham qalin bo'lishi mumkin.
+    out = _CELL_LINK_RE.sub(
+        lambda m: f'<a href="{m.group(2)}">{m.group(1)}</a>', out)
+    out = _CELL_CODE_RE.sub(lambda m: f"<code>{m.group(1)}</code>", out)
+    out = _CELL_BOLD_RE.sub(lambda m: f"<b>{m.group(1) or m.group(2)}</b>", out)
+    out = _CELL_STRIKE_RE.sub(lambda m: f"<s>{m.group(1)}</s>", out)
+    out = _CELL_ITALIC_RE.sub(lambda m: f"<i>{m.group(1)}</i>", out)
+    return out
+
+
+def _split_row(line: str) -> list[str]:
+    inner = _TABLE_ROW_RE.match(line).group(1)
+    return [c.strip() for c in inner.split("|")]
+
+
+def _compact_tables(text: str) -> str:
+    """To'g'ri tuzilgan GFM jadvallarini <table compact> ga o'giradi.
+
+    ⚠️ Shubhali jadvalga TEGILMAYDI (ustunlar soni bir xil emas, 20 dan
+    ko'p, yoki sarlavha ostidagi ajratuvchi qatori yo'q) — bunday holatda
+    markdown jadvali o'z holicha qoladi va baribir ko'rinadi. Yarim
+    o'girilgan jadval esa butun xabarni rad ettirishi mumkin.
+
+    ⚠️ Kod bloklari _protect_spans() bilan HIMOYALANGAN paytda chaqirish
+    shart: kod ichidagi `|` belgilari jadvalga o'xshab ko'rinadi.
+    """
+    lines = text.split("\n")
+    out: list[str] = []
+    i = 0
+    while i < len(lines):
+        if (_TABLE_ROW_RE.match(lines[i]) and i + 1 < len(lines)
+                and _TABLE_SEP_RE.match(lines[i + 1])):
+            header = _split_row(lines[i])
+            ncols = len(header)
+            rows: list[list[str]] = []
+            j = i + 2
+            while j < len(lines) and _TABLE_ROW_RE.match(lines[j]):
+                rows.append(_split_row(lines[j]))
+                j += 1
+            ok = (1 < ncols <= _TABLE_MAX_COLS and rows
+                  and all(len(r) == ncols for r in rows))
+            if ok:
+                cells = ["<tr>" + "".join(f"<th>{_cell_html(c)}</th>"
+                                          for c in header) + "</tr>"]
+                cells += ["<tr>" + "".join(f"<td>{_cell_html(c)}</td>"
+                                           for c in r) + "</tr>" for r in rows]
+                out.append("<table compact>" + "".join(cells) + "</table>")
+                i = j
+                continue
+        out.append(lines[i])
+        i += 1
+    return "\n".join(out)
+
+
 def build_rich_markdown(text: str) -> str:
-    """Best-effort rich message markdown for Telegram Bot API 10.1."""
+    """Best-effort rich message markdown for Telegram Bot API 10.3."""
     if not text:
         return ""
     protected, placeholders = _protect_spans(text)
+    # ⚠️ Jadval BIRINCHI o'giriladi va aynan himoya ICHIDA: (a) kod
+    # bloklaridagi `|` jadvalga o'xshaydi; (b) _cell_html() katak matnini
+    # html_escape qiladi, ya'ni undan OLDIN qo'yilgan <tg-time>/<tg-math>
+    # teglari oddiy matnga aylanib qolardi. Endi ular jadval HTML'i
+    # tayyor bo'lgandan keyin, katak ichiga to'g'ri tushadi.
+    protected = _compact_tables(protected)
     protected = _RICH_MATH_BLOCK_RE.sub(_replace_math_block, protected)
     protected = _RICH_MATH_INLINE_RE.sub(_replace_math_inline, protected)
     protected = _replace_dates(protected)
     protected = _restore_spans(protected, placeholders)
-    return protected
+    # Manbalar — himoyadan KEYIN, chunki href'ga haqiqiy URL kerak.
+    return _collapse_sources(protected)
 
 # ─────────────────────────────────────────────────────────────
 # 🔍 YAXSHILANGAN QIDIRUV BLOKI
@@ -264,6 +430,349 @@ async def fetch_page_content(url: str, max_chars: int = 4000) -> str:
     except Exception as e:
         logger.debug(f"fetch_page_content xatosi ({url}): {e}")
     return ""
+
+
+# ─────────────────────────────────────────────────────────────
+# 📷 INTERNETDAN RASM (Bot API 10.3 media bloklari)
+# ─────────────────────────────────────────────────────────────
+#
+# TAMOYIL: rasm URL'i MODELGA BERILMAYDI. Ikki sabab bor va ikkalasi ham
+# amaliy: (1) bitta URL 30-60 token, har qidiruvda bekorga pul ketadi;
+# (2) model uzun URL'ni deyarli har doim buzib yoki o'zicha to'qib yozadi,
+# natijada o'lik havola qoladi. Shuning uchun modelga faqat qisqa
+# `[rasm:N]` belgisi ko'rsatiladi, haqiqiy URL esa shu yerda, server
+# tomonda saqlanadi va yuborish oldidan almashtiriladi.
+#
+# ⚠️ Telegram media blokini O'Z SERVERIDAN tortadi. Havola o'lik bo'lsa,
+# hotlink himoyasi bo'lsa yoki fayl juda katta bo'lsa — BUTUN rich xabar
+# rad etiladi, ya'ni javob yo'qoladi. Shuning uchun bu yerda har bir URL
+# oldindan tekshiriladi (handlers/messages.py da esa qo'shimcha
+# "rasmsiz qayta urinish" pog'onasi bor).
+
+# Telegram SVG'ni media blok sifatida ko'rsatmaydi — o'tkazib yuboriladi.
+_IMAGE_SKIP_TYPES = ("image/svg", "image/x-icon", "image/vnd")
+
+
+def _content_size(headers) -> Optional[int]:
+    """Javob sarlavhalaridan fayl hajmini oladi (Range so'rovini hisobga olib)."""
+    # Range bilan so'ralganda Content-Length = so'ralgan bo'lak hajmi (1 bayt),
+    # HAQIQIY hajm esa Content-Range oxirida: "bytes 0-0/123456".
+    crange = headers.get("Content-Range") or ""
+    if "/" in crange:
+        total = crange.rsplit("/", 1)[-1].strip()
+        if total.isdigit():
+            return int(total)
+    clen = headers.get("Content-Length")
+    if clen and clen.isdigit():
+        return int(clen)
+    return None
+
+
+async def _image_url_ok(session: aiohttp.ClientSession, url: str) -> bool:
+    """URL haqiqatan ham tirik rasmmi — Telegram uni tortib ololadimi?
+
+    HEAD emas, `Range: bytes=0-0` bilan GET ishlatiladi: ko'p CDN HEAD'ga
+    405/403 qaytaradi, lekin bir baytlik Range so'roviga to'g'ri javob
+    beradi. Tanadan hech narsa o'qilmaydi — trafik amalda nolga teng.
+    """
+    try:
+        headers = {
+            "Range": "bytes=0-0",
+            "User-Agent": (
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36"
+            ),
+        }
+        async with session.get(url, headers=headers, allow_redirects=True, ssl=False) as resp:
+            if resp.status not in (200, 206):
+                return False
+            ctype = (resp.headers.get("Content-Type") or "").split(";")[0].strip().lower()
+            if not ctype.startswith("image/") or ctype.startswith(_IMAGE_SKIP_TYPES):
+                return False
+            size = _content_size(resp.headers)
+            return size is None or size <= SEARCH_IMAGE_MAX_BYTES
+    except Exception:
+        return False
+
+
+def _ddg_images_sync(query: str, max_results: int) -> List[dict]:
+    """DDG rasm qidiruvi — bloklovchi, shuning uchun doim to_thread orqali.
+
+    ⚠️ safesearch ANIQ ko'rsatiladi. Kutubxona standarti "moderate" bo'lib,
+    u ochiq internetdagi kattalar kontenti uchun yetarli emas — bot esa
+    yoshi cheklanmagan foydalanuvchilarda ishlaydi.
+    """
+    try:
+        with DDGS() as ddgs:
+            return list(ddgs.images(query, max_results=max_results,
+                                    safesearch=SEARCH_IMAGE_SAFESEARCH))
+    except Exception as e:
+        logger.error(f"DDGS images error [{query}]: {e}")
+        return []
+
+
+async def search_images(query: str, *, limit: int = SEARCH_IMAGE_MAX) -> List[dict]:
+    """Internetdan rasm qidiradi va FAQAT tirik havolalarni qaytaradi.
+
+    Natija: [{"url": ..., "title": ..., "source": ...}, ...] — ko'pi bilan
+    `limit` ta. Rasm yuklab olinmaydi, faqat havolasi tekshiriladi.
+    """
+    raw = await asyncio.to_thread(_ddg_images_sync, query, SEARCH_IMAGE_CANDIDATES)
+    if not raw:
+        return []
+
+    # Nomzodlarni tozalash: takrorlar va https bo'lmagan havolalar chiqib
+    # ketadi. http ham Telegram uchun ruxsat etilgan, lekin ko'p sayt uni
+    # 301 bilan https'ga uloqtiradi — tekshiruvni bekorga uzaytiradi.
+    seen: set = set()
+    candidates: List[dict] = []
+    for r in raw:
+        url = (r.get("image") or "").strip()
+        if not url.startswith("https://") or url in seen:
+            continue
+        seen.add(url)
+        candidates.append({
+            "url": url,
+            "title": (r.get("title") or "").strip(),
+            # Manba sayt — sarlavhada ko'rsatiladi (o'zganing rasmi).
+            "source": (r.get("source") or _host_of(r.get("url") or url)),
+        })
+
+    if not candidates:
+        return []
+
+    timeout = aiohttp.ClientTimeout(total=SEARCH_IMAGE_HEAD_TIMEOUT)
+    async with aiohttp.ClientSession(timeout=timeout) as session:
+        checks = await asyncio.gather(
+            *(_image_url_ok(session, c["url"]) for c in candidates),
+            return_exceptions=True,
+        )
+
+    alive = [c for c, ok in zip(candidates, checks) if ok is True]
+    logger.info(f"[IMAGES] «{query}»: {len(candidates)} nomzod → {len(alive)} tirik")
+    return alive[:limit]
+
+
+def _host_of(url: str) -> str:
+    try:
+        return urlparse(url).netloc.replace("www.", "")
+    except Exception:
+        return ""
+
+
+def format_image_catalog(images: List[dict]) -> str:
+    """Modelga ko'rsatiladigan rasm ro'yxati — URL'siz, atigi ~25 token."""
+    if not images:
+        return ""
+    lines = [f"[rasm:{i}] {img['title'][:70] or 'rasm'}"
+             for i, img in enumerate(images, 1)]
+    return (
+        "\n\n📷 RASMLAR TOPILDI — javob matnida ISHLATISH IXTIYORIY:\n"
+        + "\n".join(lines)
+        + "\n\nQOIDA: kerakli joyga AYNAN shu belgini yozing — [rasm:1]. "
+          "Bir nechta rasmni birga ko'rsatmoqchi bo'lsangiz [rasmlar] deb "
+          "yozing (hammasi bitta galereyaga yig'iladi). URL yozmang — "
+          "havolalarni tizim o'zi qo'yadi. Mavzuga mos kelmasa umuman "
+          "ishlatmang, bu majburiy emas.\n"
+    )
+
+
+# Modelning javobidagi rasm belgilari. Ikkinchisi — butun galereya.
+_IMAGE_TOKEN_RE = re.compile(r"\[rasm:(\d{1,2})\]")
+_IMAGE_GALLERY_RE = re.compile(r"\[rasmlar\]", re.IGNORECASE)
+# Draft (streaming) paytida foydalanuvchi xom belgini ko'rmasligi uchun.
+_IMAGE_ANY_TOKEN_RE = re.compile(r"\[rasm:\d{1,2}\]|\[rasmlar\]", re.IGNORECASE)
+
+
+def strip_image_tokens(text: str) -> str:
+    """Oraliq (streaming) ko'rinish uchun rasm belgilarini olib tashlaydi."""
+    return _IMAGE_ANY_TOKEN_RE.sub("", text)
+
+
+def _image_block(img: dict) -> str:
+    """Bitta rasm — rich markdown media bloki.
+
+    Sarlavhada manba sayt ko'rsatiladi: rasm o'zganiki, muallifligini
+    o'zimizga olib qo'yish to'g'ri emas.
+    """
+    title = (img.get("title") or "").replace('"', "'").strip()
+    source = (img.get("source") or "").strip()
+    caption = " — ".join(p for p in (title[:80], source) if p)
+    return f'![]({img["url"]} "{caption}")' if caption else f'![]({img["url"]})'
+
+
+def embed_images(markdown: str, images: List[dict]) -> str:
+    """`[rasm:N]` / `[rasmlar]` belgilarini haqiqiy media bloklariga almashtiradi.
+
+    Model ishlatmagan rasmlar shunchaki tashlanadi. Noto'g'ri raqam yozsa —
+    belgi o'chiriladi, xato bo'lmaydi: javob hech qanday holatda buzilmaydi.
+
+    ⚠️ Media blok ALOHIDA QATOR bo'lishi shart (rich markdown talabi),
+    shuning uchun almashtirishdan keyin blok atrofiga bo'sh qator qo'yiladi.
+    """
+    if not markdown or not images:
+        # Rasm yo'q bo'lsa ham belgilar matnda qolib ketmasin.
+        return strip_image_tokens(markdown) if markdown else markdown
+
+    def one(match):
+        idx = int(match.group(1))
+        if 1 <= idx <= len(images):
+            return f"\n\n{_image_block(images[idx - 1])}\n\n"
+        return ""
+
+    def gallery(_match):
+        if len(images) >= SEARCH_IMAGE_SLIDESHOW_MIN:
+            # <tg-slideshow> ichida markdown PARSLANADI (hujjatda ruxsat
+            # etilgan uchta blokdan biri) — lekin faqat bo'sh qatorlar
+            # bilan ajratilgan holda.
+            inner = "\n".join(_image_block(i) for i in images)
+            return f"\n\n<tg-slideshow>\n\n{inner}\n\n</tg-slideshow>\n\n"
+        return f"\n\n{_image_block(images[0])}\n\n"
+
+    out = _IMAGE_GALLERY_RE.sub(gallery, markdown)
+    out = _IMAGE_TOKEN_RE.sub(one, out)
+    # Almashtirish ketma-ket bo'sh qatorlar hosil qilishi mumkin.
+    return re.sub(r"\n{3,}", "\n\n", out).strip()
+
+
+# ─────────────────────────────────────────────────────────────
+# 🖼 FAYL ICHIGA RASM (PPTX / PDF / DOCX uchun)
+# ─────────────────────────────────────────────────────────────
+#
+# Xabardagi rasmdan tubdan farq qiladi: u yerda bot faqat URL yozadi va
+# rasmni TELEGRAM tortadi. Prezentatsiya ichidagi rasm esa faylning bir
+# qismi — baytlari kerak. Sandbox'ning o'zi yuklab ololmaydi (tool
+# tavsifida "internetga chiqish yo'q" deb va'da berilgan, va model
+# to'qib chiqargan URL deyarli har doim o'lik bo'ladi). Shuning uchun
+# bot rasmlarni OLDINDAN yuklab olib, ish papkasiga tayyor qo'yadi.
+_IMAGE_UA = {
+    "User-Agent": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+        "(KHTML, like Gecko) Chrome/124.0 Safari/537.36"
+    )
+}
+
+
+def _to_jpeg(raw: bytes) -> Optional[bytes]:
+    """Har qanday rasmni PPTX/PDF qabul qiladigan JPEG'ga o'giradi.
+
+    ⚠️ NEGA MAJBURIY: DuckDuckGo natijalarining katta qismi WEBP, va
+    python-pptx WEBP'ni QABUL QILMAYDI (reportlab ham). O'girmasdan
+    qo'yilsa kod aynan rasm qo'shish joyida yiqilardi.
+
+    Bu ayni paytda tekshiruv ham: Pillow ocholmasa — bu rasm emas
+    (HTML xato sahifasi bo'lishi mumkin), demak ishlatilmaydi.
+    """
+    try:
+        from io import BytesIO
+        from PIL import Image
+    except ImportError:
+        logger.warning("[FileImage] Pillow yo'q — rasm o'girilmadi")
+        return None
+    try:
+        im = Image.open(BytesIO(raw))
+        im.load()
+        if im.mode != "RGB":
+            im = im.convert("RGB")
+        # Slaydga bundan kattasi kerak emas, fayl esa bekorga shishadi.
+        im.thumbnail((FILE_IMAGE_MAX_SIDE, FILE_IMAGE_MAX_SIDE))
+        buf = BytesIO()
+        im.save(buf, format="JPEG", quality=FILE_IMAGE_JPEG_QUALITY, optimize=True)
+        return buf.getvalue()
+    except Exception as e:
+        logger.debug(f"[FileImage] o'girib bo'lmadi: {e}")
+        return None
+
+
+async def _download_capped(session: aiohttp.ClientSession, url: str) -> Optional[bytes]:
+    """Rasmni chegara bilan yuklab oladi (katta faylni yarmida tashlaydi)."""
+    try:
+        async with session.get(url, headers=_IMAGE_UA, allow_redirects=True,
+                               ssl=False) as resp:
+            if resp.status != 200:
+                return None
+            ctype = (resp.headers.get("Content-Type") or "").split(";")[0].lower()
+            if not ctype.startswith("image/"):
+                return None
+            buf = bytearray()
+            async for chunk in resp.content.iter_chunked(65536):
+                buf += chunk
+                if len(buf) > FILE_IMAGE_MAX_BYTES:
+                    logger.debug(f"[FileImage] juda katta, tashlandi: {url[:80]}")
+                    return None
+            return bytes(buf)
+    except Exception:
+        return None
+
+
+async def _one_image(session: aiohttp.ClientSession, query: str) -> tuple:
+    """Bitta so'rov uchun ishlaydigan rasm topadi. -> (baytlar|None, manba)."""
+    candidates = await asyncio.to_thread(_ddg_images_sync, query, FILE_IMAGE_CANDIDATES)
+    for c in candidates:
+        url = (c.get("image") or "").strip()
+        if not url.startswith(("http://", "https://")):
+            continue
+        raw = await _download_capped(session, url)
+        if not raw:
+            continue
+        jpeg = await asyncio.to_thread(_to_jpeg, raw)
+        if jpeg:
+            # ⚠️ Manba sifatida rasm turgan SAHIFA hosti olinadi, `source`
+            # maydoni EMAS: ddgs u yerga ba'zan qidiruv tizimining nomini
+            # ("Bing") yozadi va slayd ostida "manba: Bing" degan mutlaqo
+            # foydasiz (va noto'g'ri) atribut chiqib qolardi.
+            return jpeg, (_host_of(c.get("url") or url) or c.get("source") or "")
+    return None, ""
+
+
+async def download_images(queries, cache: Optional[dict] = None) -> tuple:
+    """So'rovlar bo'yicha rasm yuklab oladi va sandbox uchun tayyorlaydi.
+
+    Qaytaradi: ({"rasm1.jpg": baytlar, ...}, ["rasm1.jpg — ...", ...]).
+
+    ⚠️ Nomlash SHARTNOMA: `rasm<N>.jpg`, bunda N — so'rovning TARTIB
+    RAQAMI. Model kodni shu chaqiruvning o'zida yozadi, ya'ni fayl
+    nomini oldindan bilishi shart. Topilmagan so'rov ham raqamini
+    "band qiladi" — aks holda qolgan rasmlar surilib, model butunlay
+    boshqa rasmni boshqa slaydga qo'yib yuborardi.
+
+    ⚠️ `cache` (so'rov -> (baytlar, manba)) — bitta foydalanuvchi
+    so'rovi doirasida. Fayl vazifasi 4 raundgacha takrorlanadi va
+    kodi xato bo'lsa model qayta chaqiradi; keshsiz har raundda o'sha
+    rasmlar QAYTA yuklanardi — sekin, DDG limitini yeydi va eng
+    yomoni har safar BOSHQA rasm tushib, model kodini rasm ostidagi
+    izohga moslay olmasdi.
+    """
+    cleaned = [q.strip() for q in (queries or [])
+               if isinstance(q, str) and q.strip()][:FILE_IMAGE_MAX_QUERIES]
+    if not cleaned:
+        return {}, []
+
+    if cache is None:
+        cache = {}
+    fresh = [q for q in cleaned if q not in cache]
+
+    if fresh:
+        timeout = aiohttp.ClientTimeout(total=FILE_IMAGE_TIMEOUT)
+        async with aiohttp.ClientSession(timeout=timeout) as session:
+            results = await asyncio.gather(
+                *(_one_image(session, q) for q in fresh), return_exceptions=True)
+        for query, res in zip(fresh, results):
+            cache[query] = res if isinstance(res, tuple) else (None, "")
+
+    files, manifest = {}, []
+    for i, query in enumerate(cleaned, 1):
+        name = f"rasm{i}.jpg"
+        data, source = cache.get(query) or (None, "")
+        if data:
+            files[name] = data
+            manifest.append(f"{name} — «{query}» (manba: {source or 'nomaʼlum'}, "
+                            f"{len(data) // 1024} KB)")
+        else:
+            manifest.append(f"{name} — TOPILMADI («{query}»), bu faylni ISHLATMANG")
+    logger.info(f"[FileImage] {len(files)}/{len(cleaned)} ta rasm tayyor "
+                f"({len(fresh)} ta yangi yuklandi)")
+    return files, manifest
 
 
 async def multi_source_deep_search(
@@ -646,6 +1155,26 @@ _TOOLS = [
                         "o'zbekcha bo'lsa, ikkinchisi ruscha yoki inglizcha bo'lishi mumkin."
                     ),
                 },
+                "want_images": {
+                    "type": "boolean",
+                    "description": (
+                        "Internetdan TAYYOR rasm olib kelish kerakmi. Standart: false.\n"
+                        "⚠️ Foydalanuvchi rasm so'rasa — «rasm bilan ber», «rasmini "
+                        "ko'rsat», «suratlari bilan», «internetdan qidirib yubor» — "
+                        "javob AYNAN SHU: shu toolni want_images=true bilan chaqiring, "
+                        "rasm to'g'ridan-to'g'ri chatga chiqadi. Fayl yoki PPTX "
+                        "yaratish KERAK EMAS, va «rasm yubora olmayman» deb HECH "
+                        "QACHON yozmang — yubora olasiz.\n"
+                        "true QILING, agar so'rov ko'rgazmali bo'lsa: avtomobil, telefon "
+                        "yoki boshqa mahsulot, shahar/joy/bino, hayvon, o'simlik, taom, "
+                        "mashhur shaxs, kiyim, dizayn namunasi — yoki foydalanuvchi "
+                        "'rasm', 'surat', 'ko'rsat', 'qanday ko'rinadi' deb so'ragan bo'lsa.\n"
+                        "false QOLDIRING: valyuta kursi, ob-havo, yangilik matni, narx, "
+                        "statistika, ta'rif, tarix, maslahat, kod, hisob-kitob — ya'ni "
+                        "javob matn bilan to'liq tushunarli bo'ladigan hamma holat.\n"
+                        "Shubhalansangiz false qiling: keraksiz rasm javobni og'irlashtiradi."
+                    ),
+                },
             },
             "required": ["primary_query"],
         },
@@ -673,6 +1202,65 @@ _DOC_DESIGN_GUIDE = (
     "   - 'hisobot', 'hujjat', 'ariza', 'xat' → DOCX (python-docx).\n"
     "   - 'jadval', 'ro'yxat', 'hisob-kitob' → XLSX (openpyxl).\n"
     "   - PDF faqat foydalanuvchi ANIQ 'PDF' desa (reportlab).\n\n"
+
+    "1z) PREZENTATSIYA UCHUN `deck` MODULINI ISHLATING — MAJBURIY.\n"
+    "Ish papkasida tayyor `deck` moduli bor. Slaydlarni QO'LDA "
+    "Inches(...) bilan joylashtirmang: aynan shunda rasm matn ustiga, "
+    "manba yozuvi rasm ustiga, altbet raqami esa rasm ustiga tushib, "
+    "slayd dabdala bo'lib chiqadi. `deck` butun geometriyani (xavfsiz "
+    "chekka, rasm nisbati, manba uchun joy, altbet bandi) o'z ustiga "
+    "oladi va slaydlarga yumshoq o'tish (fade) ham qo'shadi. Sizga "
+    "faqat MAZMUN qoladi:\n"
+    "     import os, deck\n"
+    "     # Mavjud rasmlarni HOVUZ qilib bering — maketlar o'zi taqsimlaydi\n"
+    "     rasmlar = [f for f in ['rasm1.jpg','rasm2.jpg','rasm3.jpg',\n"
+    "                            'rasm4.jpg','rasm5.jpg']\n"
+    "                if os.path.exists(f)]\n"
+    "     d = deck.Deck('Birinchi jahon urushi', theme='navy',\n"
+    "                   footer='Tarix fanidan', images=rasmlar)\n"
+    "     # image= YOZMANG — modul navbatdagi rasmni o'zi oladi va\n"
+    "     # muqovada TO'LIQ EKRANLI fon qilib qo'yadi\n"
+    "     d.cover('BIRINCHI JAHON URUSHI', '1914–1918: sabab va oqibatlar',\n"
+    "             credit='iwm.org.uk', footer='Tarix fanidan taqdimot')\n"
+    "     d.section('Urush sabablari', 1)          # fon rasmi — avtomatik\n"
+    "     d.bullets('Asosiy sabablar',\n"
+    "               [('Imperializm', 'Mustamlakalar uchun kurash'),\n"
+    "                ('Militarizm', 'Qurollanish poygasi')],\n"
+    "               credit='wikimedia.org')        # rasm — avtomatik\n"
+    "     d.stats('Raqamlarda', [('38 mln', 'Talafot'), ('4', 'Yil')])\n"
+    "     d.image_slide('Xandaq urushi', caption=\"G'arbiy front\",\n"
+    "                   credit='iwm.org.uk')\n"
+    "     d.table('Solishtirish', [['Davlat','Talafot'],['Rossiya','1.8 mln']])\n"
+    "     d.quote('Kuchli iqtibos.', 'Muallif')\n"
+    "     d.closing('Xulosa', 'Yakuniy fikr')\n"
+    "     d.save('output/taqdimot.pptx')\n"
+    "  MAKETLAR: cover, section, bullets, image_slide, stats, table, "
+    "quote, closing. TEMALAR: 'navy', 'forest', 'plum', 'slate' — "
+    "mavzuga mosini tanlang (tarix→navy, ekologiya→forest, "
+    "san'at/madaniyat→plum, texnologiya→slate).\n"
+    "  ⚠️ RASMNI QO'LDA TAQSIMLAMANG. `images=` hovuzini bering va "
+    "`image=` ni umuman yozmang — modul har bir maketga o'zi mos "
+    "rasmni oladi, ramkasini hisoblaydi va matn kartochkasi bilan bir "
+    "xil o'lchamda joylaydi. Foydalanuvchi «birinchi varaqda rasm "
+    "bo'lsin» desa ham, buni «faqat birinchi varaqda» deb tushunmang: "
+    "rasm butun taqdimot bo'ylab bo'lgani doim yaxshiroq. Rasm ATAYLAB "
+    "kerak bo'lmagan yagona slaydda `image=None` yozing (masalan "
+    "jadval yoki raqamlar slaydi).\n"
+    "  RASM SONI: 5-8 ta `image_queries` so'rang. Kam so'rasangiz "
+    "modul bir xil rasmni takrorlashga majbur bo'ladi.\n"
+    "  TUZILISH: 8-14 slayd. Muqova → bo'lim → 2-3 mazmun slaydi → "
+    "raqamlar → rasm → ... → xulosa. Ketma-ket bir xil maketni "
+    "takrorlamang, ritm bo'lsin. Har `bullets` da 3-5 band, har band "
+    "qisqa (('Sarlavha', 'bir gapli izoh') juftligi eng yaxshi ko'rinadi).\n"
+    "  ⛔️ MANBALAR SLAYDI YASAMANG. URL ro'yxati alohida slayd sifatida "
+    "taqdimotni buzadi; rasm manbasi allaqachon har slaydda mayda yozuv "
+    "bilan ko'rsatiladi (credit=...). Xulosa — oxirgi slayd.\n"
+    "  Diagramma kerak bo'lsa matplotlib bilan PNG qiling va uni "
+    "d.image_slide(...) ga bering.\n"
+    "  ⚠️ QAMROV: quyidagi 1b-8 bandlar PDF/DOCX/XLSX uchun. PPTX'da "
+    "ularning hammasini `deck` o'zi bajaradi — u yerda rang, koordinata, "
+    "shrift o'lchami yoki shakl sozlamalarini QO'LDA yozmang, aks holda "
+    "modul hisoblagan maketni buzasiz.\n\n"
 
     "1a) PDF UCHUN `docgen` MODULINI ISHLATING — MAJBURIY. Ish papkasida "
     "tayyor `docgen` moduli bor (import docgen). U shrift va matn "
@@ -748,12 +1336,36 @@ _DOC_DESIGN_GUIDE = (
     "8) BELGILAR: ✈ kabi emoji shakl ichida mayda va noaniq chiqadi — "
     "ular o'rniga rangli doira/to'rtburchak va matn yorliqlaridan "
     "foydalaning.\n\n"
-    "9) RASM: sandbox internetga chiqmaydi, shuning uchun tayyor "
-    "fotosurat YUKLAB OLIB BO'LMAYDI. Buning o'rniga rangli bloklar, "
-    "diagrammalar, katta tipografika va geometrik shakllardan "
-    "foydalaning. Foydalanuvchi 'rasm qo'sh' desa — nega qo'sha "
-    "olmasligingizni qisqa tushuntiring va o'zi rasm yuborsa "
-    "joylashtira olishingizni ayting."
+    "9) FOTOSURAT: hujjat ichiga internetdan tayyor rasm QO'YISH MUMKIN — "
+    "buning uchun `image_queries` parametrini ishlating (kod ichida "
+    "yuklab olishga urinmang, tarmoq yopiq). Tizim rasmlarni kod ishga "
+    "tushishidan oldin ish papkasiga `rasm1.jpg`, `rasm2.jpg` ... deb "
+    "qo'yadi — so'rovlar tartibida.\n"
+    "   ⛔️ Bu FAQAT hujjat ichi uchun. Foydalanuvchi shunchaki «rasm "
+    "bilan ber» yoki «rasmini ko'rsat» degan bo'lsa — hujjat KERAK EMAS, "
+    "internet_search(want_images=true) bilan rasmni to'g'ridan-to'g'ri "
+    "chatga yuboring.\n"
+    "   - QACHON: tarixiy voqea, shaxs, joy, bino, mahsulot, hayvon, "
+    "san'at asari — ya'ni haqiqiy fotosurat mavzuni ochib beradigan "
+    "hollarda. Mavhum tushuncha (iqtisodiyot, strategiya, motivatsiya) "
+    "uchun rasm QIDIRMANG — u yerda diagramma va tipografika kuchliroq.\n"
+    "   - Prezentatsiyada odatda 3-6 ta rasm yetarli: muqova + asosiy "
+    "slaydlar. Har slaydga rasm tiqish kerak emas.\n"
+    "   - PPTX'da rasmni `deck` ga bering: d.cover(image='rasm1.jpg', "
+    "credit='iwm.org.uk'), d.bullets(..., image='rasm2.jpg', "
+    "credit='...'). Nisbat, joylashuv va manba yozuvi uchun joy — "
+    "modulning ishi. Rasm topilmasa `deck` o'zi rasmsiz maketga "
+    "o'tadi, kod YIQILMAYDI.\n"
+    "   - PDF/DOCX'da esa o'zingiz tekshiring:\n"
+    "         import os\n"
+    "         if os.path.exists('rasm1.jpg'): ...\n"
+    "     va NISBATNI BUZMANG — kenglik yoki balandlikdan FAQAT bittasini "
+    "bering, ikkalasi berilsa rasm cho'ziladi.\n"
+    "   - MANBA: rasm o'zganiki. Manba sayt nomi tool natijasida "
+    "ko'rsatiladi — uni `credit=` ga bering (PPTX) yoki rasm ostiga "
+    "mayda kulrang yozuv qiling (PDF/DOCX).\n"
+    "   - Rasm kerak bo'lmasa `image_queries` ni umuman yubormang: "
+    "keraksiz fotosurat hujjatni og'irlashtiradi."
 )
 
 # Fayl yaratish/tahrirlash tool'i — `_TOOLS`dan ALOHIDA saqlanadi, chunki u
@@ -774,6 +1386,13 @@ _FILE_TASK_TOOL = {
         "QACHON ISHLATMASLIK KERAK: agar foydalanuvchi shunchaki fayl "
         "haqida savol bersa yoki mazmunini so'rasa — bu tool KERAK EMAS, "
         "oddiy matnli javob bering.\n\n"
+        "⛔️ RASM SO'RALGANDA BU TOOLNI CHAQIRMANG. «rasm bilan ber», "
+        "«rasmini ko'rsat», «suratlari bilan», «rasm yubor» — bularning "
+        "HAMMASI chatga rasm yuborish, ya'ni `internet_search` toolini "
+        "`want_images=true` bilan chaqirish demakdir. Bu yerdagi "
+        "`image_queries` FAQAT haqiqiy FAYL (PPTX/PDF/DOCX) yaratilayotgan "
+        "bo'lsa, ya'ni foydalanuvchi ANIQ prezentatsiya/hujjat so'ragan "
+        "bo'lsagina ishlatiladi. Shubhalansangiz — fayl EMAS.\n\n"
         "MUHIT:\n"
         "- Kod joriy papkada (cwd) ishlaydi. Foydalanuvchi fayl yuborgan "
         "bo'lsa, u shu papkada `input.<kengaytma>` nomi bilan turadi "
@@ -786,9 +1405,13 @@ _FILE_TASK_TOOL = {
         "xlutils, python-docx, "
         "python-pptx, pypdf, reportlab, matplotlib, PyMuPDF (fitz), "
         "beautifulsoup4, lxml va standart kutubxona (json, csv, zipfile, "
-        "sqlite3, xml, re). Internetga chiqish YO'Q — hech narsa yuklab "
-        "olmang va pip install qilmang. Ro'yxatda YO'Q kutubxonani "
-        "import qilmang.\n"
+        "sqlite3, xml, re) va PIL/Pillow. Internetga chiqish YO'Q — hech "
+        "narsa yuklab olmang va pip install qilmang. Ro'yxatda YO'Q "
+        "kutubxonani import qilmang.\n"
+        "- INTERNETDAN RASM KERAK BO'LSA — `image_queries` parametridan "
+        "foydalaning (quyiga qarang). Kod ichida URL'dan rasm yuklab "
+        "olishga URINMANG: tarmoq yopiq va o'ylab topilgan havola "
+        "baribir ishlamaydi.\n"
         "- MAVJUD EXCEL FAYLNI TAHRIRLASH (.xls ham, .xlsx ham) — MAJBURIY "
         "`xledit` modulidan foydalaning. Uni pandas/openpyxl/xlwt bilan "
         "qayta yozish MUMKIN EMAS: shunda rang, shrift, chegara, sana "
@@ -824,6 +1447,30 @@ _FILE_TASK_TOOL = {
             "code": {
                 "type": "string",
                 "description": "Bajariladigan to'liq Python kodi.",
+            },
+            "image_queries": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": (
+                    "FAQAT yaratilayotgan HUJJAT ICHIGA qo'yiladigan "
+                    "rasmlar. Chatga rasm yuborish uchun EMAS — buning "
+                    "uchun internet_search(want_images=true) bor.\n"
+                    "Har bir element — qidiruv so'rovi, masalan "
+                    "\"Verdun jangi 1916\". Tizim ularni kod ishga "
+                    "tushishidan OLDIN yuklab olib, ish papkasiga qo'yadi.\n"
+                    "NOMLASH QAT'IY: birinchi so'rov -> rasm1.jpg, "
+                    "ikkinchisi -> rasm2.jpg va hokazo. Ko'pi bilan 6 ta.\n"
+                    "Kodni SHU chaqiruvning o'zida yozing va fayllarni shu "
+                    "nomlar bilan ishlating, lekin HAR BIRINI tekshiring:\n"
+                    "     import os\n"
+                    "     if os.path.exists('rasm1.jpg'):\n"
+                    "         slide.shapes.add_picture('rasm1.jpg', ...)\n"
+                    "Ba'zi so'rov bo'yicha rasm topilmasligi MUMKIN — "
+                    "tekshiruvsiz kod o'sha joyda yiqiladi.\n"
+                    "So'rovlarni ANIQ yozing (mavzu + yil/joy), umumiy "
+                    "so'z ('tarix', 'urush') mos kelmagan rasm beradi. "
+                    "Rasm kerak bo'lmasa bu parametrni umuman yubormang."
+                ),
             },
         },
         "required": ["code"],
@@ -889,6 +1536,20 @@ _RESEARCH_SYSTEM = """CHUQUR TADQIQOT REJIMI — QAT'IY TARTIB:
    to'qima. Javob foydalanuvchi savoli qaysi tilda bo'lsa — o'sha tilda."""
 
 
+# Tool natijasi — ICHKI ma'lumot. Model uni foydalanuvchiga ko'chirib
+# qo'yishga moyil: traceback, vaqtinchalik papka yo'llari, `deck.py`, tool
+# nomlari, hatto topshiriqning xom rejasi. Foydalanuvchi uchun bu "bot
+# buzilibdi" degan taassurot beradi, shuning uchun taqiq HAR BIR
+# muvaffaqiyatsiz yo'lga qo'shiladi — model aynan o'sha paytda
+# "tushuntirish" yozadi.
+_NO_INTERNALS = (
+    "\n\n🔒 JAVOBDA HECH QACHON KO'RSATMANG: xato matni (traceback), kod, "
+    "fayl yo'llari, `script.py`/`deck.py`/`docgen` kabi ichki nomlar, tool "
+    "nomlari, raundlar soni yoki topshiriqning xom rejasi. Foydalanuvchiga "
+    "faqat oddiy tilda natijani ayting."
+)
+
+
 async def _run_file_task(
     code: str,
     *,
@@ -898,12 +1559,18 @@ async def _run_file_task(
     output_files: Optional[list],
     round_num: int,
     rounds_left: int = 99,
+    image_queries: Optional[list] = None,
+    image_cache: Optional[dict] = None,
 ) -> str:
     """run_python_sandbox tool chaqiruvini bajaradi.
 
     Kvotani (bir marta) yechadi, kodni sandbox'da ishga tushiradi va
     natijani GPT tushunadigan matn sifatida qaytaradi. Yaratilgan
     fayllarni chaqiruvchining `output_files` ro'yxatiga qo'shadi.
+
+    `image_queries` berilsa — kod ishga tushishidan OLDIN rasmlar
+    internetdan yuklab olinib, ish papkasiga `rasm1.jpg`... deb
+    qo'yiladi (sandbox tarmoqqa chiqmaydi).
     """
     if quota is not None:
         allowed = await quota.ensure_charged()
@@ -918,8 +1585,27 @@ async def _run_file_task(
                 "ko'rsatadi."
             )
 
-    logger.info(f"[FileTask] round={round_num}, kod uzunligi={len(code)}")
-    result = await run_in_sandbox(code, input_file_bytes, input_filename)
+    # Rasmlar kod ishga tushishidan OLDIN tayyor bo'lishi kerak — model
+    # kodni shu chaqiruvning o'zida `rasm1.jpg` nomiga tayanib yozgan.
+    extra_files, image_manifest = {}, []
+    if image_queries:
+        try:
+            extra_files, image_manifest = await download_images(
+                image_queries, cache=image_cache)
+        except Exception as e:
+            logger.warning(f"[FileImage] yuklashda xatolik: {e}")
+            image_manifest = ["Rasm yuklab bo'lmadi — kodni rasmsiz ishlating."]
+
+    logger.info(f"[FileTask] round={round_num}, kod uzunligi={len(code)}, "
+                f"rasm={len(extra_files)}")
+    result = await run_in_sandbox(code, input_file_bytes, input_filename,
+                                  extra_files=extra_files or None)
+
+    # Model qaysi rasm HAQIQATAN mavjudligini bilishi shart: topilmagani
+    # uchun kod yiqilgan bo'lsa, keyingi raundda uni tashlab keta oladi.
+    images_note = ""
+    if image_manifest:
+        images_note = "\n\nRASMLAR:\n" + "\n".join(image_manifest)
 
     # Model bosqichlar tugayotganini BILISHI kerak — aks holda oxirgi
     # urinishni ham tekshiruvga sarflab, keyin "menda bunday vosita yo'q"
@@ -936,18 +1622,24 @@ async def _run_file_task(
     if not result.success:
         logger.info(f"[FileTask] round={round_num} XATO: {result.traceback[:200]}")
         return (
-            f"XATO — kod bajarilmadi:\n{result.traceback[:3000]}\n\n"
-            "Kodni tuzatib qayta chaqiring." + warn
+            f"XATO — kod bajarilmadi:\n{result.traceback[:3000]}"
+            + images_note + "\n\n"
+            "Kodni tuzatib qayta chaqiring. Agar xato rasm tufayli bo'lsa — "
+            "o'sha faylni tashlab keting yoki os.path.exists bilan o'rang. "
+            "⚠️ Rasm kerak bo'lsa `image_queries` ni AYNAN o'sha ro'yxat "
+            "bilan qayta yuboring (keshdan olinadi, qayta yuklanmaydi va "
+            "aynan o'sha rasmlar bo'ladi); yubormasangiz rasm fayllari "
+            "ish papkasida BO'LMAYDI." + warn + _NO_INTERNALS
         )
 
     if not result.output_files:
         return (
             f"Kod xatosiz bajarildi, LEKIN `output/` papkasida hech qanday "
-            f"fayl yo'q.\nSTDOUT:\n{result.stdout[:1500]}\n\n"
+            f"fayl yo'q.\nSTDOUT:\n{result.stdout[:1500]}" + images_note + "\n\n"
             "Agar bu tekshiruv (inspeksiya) qadami bo'lsa — davom eting va "
             "endi haqiqiy faylni yarating. Agar fayl yaratmoqchi bo'lgan "
             "bo'lsangiz — uni `output/` papkasiga yozganingizga ishonch "
-            "hosil qiling." + warn
+            "hosil qiling." + warn + _NO_INTERNALS
         )
 
     if quota is not None:
@@ -959,7 +1651,7 @@ async def _run_file_task(
     logger.info(f"[FileTask] round={round_num} muvaffaqiyat: {names}")
     return (
         f"BAJARILDI. Fayllar yaratildi va foydalanuvchiga avtomatik "
-        f"yuboriladi: {names}\nSTDOUT:\n{result.stdout[:1500]}\n\n"
+        f"yuboriladi: {names}\nSTDOUT:\n{result.stdout[:1500]}" + images_note + "\n\n"
         "Endi foydalanuvchiga nima qilganingizni QISQA (1-2 gap) tushuntiring. "
         "Faylni qanday yuklab olishni tushuntirmang — u allaqachon biriktirilgan."
     )
@@ -1470,12 +2162,20 @@ async def get_openai_reply(
     input_filename: Optional[str] = None,
     output_files: Optional[list] = None,
     file_quota_out: Optional[list] = None,
+    # Internetdan topilgan rasmlar shu ro'yxatga yoziladi (chaqiruvchi uni
+    # embed_images() bilan javob matniga qo'yadi). None → rasm umuman
+    # qidirilmaydi, ya'ni eski xatti-harakat saqlanadi.
+    images_out: Optional[list] = None,
     is_pro: bool = False,
     research: bool = False,
     tg_name: Optional[str] = None,
     tools_enabled: bool = True,
 ):
-    system_prompt = f"{build_system_prompt()}\n\n{CONCISE_INSTRUCTION}\n\n{STRICT_MATH_RULES}"
+    # ⚠️ IMAGE_CAPABILITY_NOTE ataylab FAQAT shu yo'lda. get_vision_reply()
+    # bir raundli va unda qidiruv tooli YO'Q — u yerda "rasm yubora olaman"
+    # deyish bajarilmaydigan va'da bo'lardi.
+    system_prompt = (f"{build_system_prompt()}\n\n{CONCISE_INSTRUCTION}\n\n"
+                     f"{IMAGE_CAPABILITY_NOTE}\n\n{STRICT_MATH_RULES}")
 
     messages: list = []
 
@@ -1537,6 +2237,11 @@ async def get_openai_reply(
     # xato butun byudjetni yeb qo'yardi.
     MAX_FILE_ROUNDS = 4
     MAX_TOTAL_ROUNDS = 8   # cheksiz siklga qarshi umumiy xavfsizlik chegarasi
+
+    # Hujjat ichiga qo'yiladigan rasmlar shu so'rov doirasida keshlanadi:
+    # model kodini tuzatib qayta chaqirganda o'sha rasmlar qaytadan
+    # yuklanmasin va — bundan ham muhimi — AYNAN O'SHA rasm qolsin.
+    file_image_cache: dict = {}
 
     search_rounds = 0
     file_rounds = 0
@@ -1707,6 +2412,8 @@ async def get_openai_reply(
                     output_files=output_files,
                     round_num=file_rounds + 1,
                     rounds_left=MAX_FILE_ROUNDS - file_rounds,
+                    image_queries=args.get("image_queries"),
+                    image_cache=file_image_cache,
                 )
             elif call_item.name == "generate_image":
                 # ⚠️ Bu `elif` pastdagi `else` dan OLDIN turishi SHART:
@@ -1736,7 +2443,8 @@ async def get_openai_reply(
 
                 if primary_query:
                     logger.info(
-                        f"[SEARCH] primary='{primary_query}' extra={extra_queries} round={search_rounds + 1}"
+                        f"[SEARCH] primary='{primary_query}' extra={extra_queries} "
+                        f"images={bool(args.get('want_images'))} round={search_rounds + 1}"
                     )
                     tool_output = await multi_source_deep_search(
                         primary_query=primary_query,
@@ -1744,6 +2452,20 @@ async def get_openai_reply(
                         fetch_pages=6 if research else 3,
                         max_queries=4 if research else 3,
                     )
+                    # Rasm — FAQAT model o'zi so'raganda va faqat bir marta.
+                    # Ikkinchi qidiruv raundida qayta chaqirilsa katalog
+                    # raqamlari siljib ketardi (model birinchi ro'yxatga
+                    # qarab [rasm:2] yozib qo'ygan bo'lishi mumkin).
+                    if (args.get("want_images") and images_out is not None
+                            and not images_out):
+                        try:
+                            found = await search_images(primary_query)
+                        except Exception as e:
+                            logger.warning(f"[IMAGES] qidiruv xatosi: {e}")
+                            found = []
+                        if found:
+                            images_out.extend(found)
+                            tool_output += format_image_catalog(found)
                 else:
                     tool_output = "Qidiruv so'rovi bo'sh bo'lgani uchun bajarilmadi."
 
@@ -1801,6 +2523,7 @@ async def get_gpt_reply(
     input_filename: Optional[str] = None,
     output_files: Optional[list] = None,
     file_quota_out: Optional[list] = None,
+    images_out: Optional[list] = None,
     is_pro: bool = False,
     research: bool = False,
     tg_name: Optional[str] = None,
@@ -1814,6 +2537,7 @@ async def get_gpt_reply(
         input_filename=input_filename,
         output_files=output_files,
         file_quota_out=file_quota_out,
+        images_out=images_out,
         is_pro=is_pro,
         research=research,
         tg_name=tg_name,

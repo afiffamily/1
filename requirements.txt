@@ -39,6 +39,12 @@ xlrd==2.0.2
 xlwt==1.3.0
 xlutils==2.0.0
 pandas==2.2.3              # 2.2.2 da cp313 g'ildiragi yo'q — deploy yiqilgan
+# ⚠️ ATAYLAB ochiq qadalgan (ilgari python-pptx/matplotlib orqali tasodifan
+# kelardi). Internetdan olingan rasmni JPEG'ga o'girish uchun SHART:
+# DDG natijalarining katta qismi WEBP, python-pptx esa WEBP'ni qabul
+# qilmaydi. Tasodifiy bog'liqlikka tayanib qolish — o'sha paketlardan
+# biri Pillow'dan voz kechsa, hujjatdagi rasm jimgina yo'qolishi demak.
+Pillow==11.3.0             # cp313 g'ildiragi bor (tekshirilgan)
 python-pptx==1.0.2
 reportlab==5.0.0
 pypdf==6.14.2
