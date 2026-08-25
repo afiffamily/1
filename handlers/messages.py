@@ -741,6 +741,7 @@ async def process_stream_draft(message: Message, stream_generator, content_type:
     using_rich_draft = message.chat.type == "private"
     can_send_rich = True
     fallback_message = None
+    fallback_used = False      # zaxira xabar yakuniy javob uchun ishlatildimi
     last_push = 0.0
 
     # Qidiruv boshlanganda GPT-generator "[STATUS]search" chunk yuborishi
@@ -928,6 +929,20 @@ async def process_stream_draft(message: Message, stream_generator, content_type:
                 if preamble:
                     await send_interim(preamble)
                     interim_texts.append(preamble)
+
+                    # ⚠️ YANGI DRAFT SHART. Chatga haqiqiy xabar
+                    # yuborilgach eski draft o'lik bo'lib qoladi: pinglar
+                    # rad etila boshlaydi, `using_rich_draft` o'chadi va
+                    # o'rniga "⏳ Javob tayyorlanmoqda..." degan ODDIY
+                    # xabar paydo bo'ladi. U yakuniy javob boshqa yo'l
+                    # bilan ketgani uchun chatda yarim matn va ✍️ bilan
+                    # osilib qolardi — animatsiya esa umuman ko'rinmasdi.
+                    _stop_events.pop(draft_id, None)
+                    draft_id = abs(hash((message.chat.id, message.message_id,
+                                         time.time_ns()))) % 2_147_483_647 or 1
+                    _stop_events[draft_id] = stop_requested
+                    using_rich_draft = message.chat.type == "private"
+
                     # Animatsiya matn kelganda to'xtagan edi — qayta yoqamiz.
                     if stop_animation.is_set():
                         stop_animation.clear()
@@ -1067,9 +1082,20 @@ async def process_stream_draft(message: Message, stream_generator, content_type:
             fallback_text = strip_image_tokens(part)
             if idx == 0 and fallback_message is not None:
                 if await _edit_message_fallback(fallback_message, fallback_text) is not None:
+                    fallback_used = True
                     continue
 
             await _answer_plain(message, fallback_text)
+
+    # "⏳ Javob tayyorlanmoqda..." xabari — bu faqat draft yiqilgandagi
+    # ZAXIRA ko'rsatkich. Yakuniy javob boshqa yo'l bilan yetkazilgan
+    # bo'lsa (yoki umuman matn bo'lmasa — faqat fayl), u chatda yarim
+    # matn va ✍️ belgisi bilan osilib qolardi. O'chirib tashlaymiz.
+    if fallback_message is not None and not fallback_used:
+        try:
+            await bot.delete_message(message.chat.id, fallback_message.message_id)
+        except Exception:
+            pass
 
     # Oraliq xabarlar ham foydalanuvchiga YETIB BORGAN javob — ular tarixga
     # ham, kvota tekshiruviga ham qo'shiladi.

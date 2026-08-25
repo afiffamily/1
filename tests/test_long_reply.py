@@ -94,8 +94,25 @@ async def run_stream(message, chunks, *, rich_ok):
     return text, rich_calls
 
 
+class FakeBot:
+    """`bot.delete_message` uchun — testda tarmoqqa chiqmaslik kerak."""
+    def __init__(self):
+        self.deleted = []
+
+    async def delete_message(self, chat_id, message_id):
+        self.deleted.append(message_id)
+
+
 async def main():
     LIMIT = m.MAX_MESSAGE_CHARS
+    real_bot, m.bot = m.bot, FakeBot()
+    try:
+        await _checks(LIMIT)
+    finally:
+        m.bot = real_bot
+
+
+async def _checks(LIMIT):
 
     # ── 1) Har bir bo'lak chegaraga sig'adi ─────────────────────────
     long_text = "\n\n".join(f"{i}-xat boshi. " + "so'z " * 120 for i in range(40))
@@ -185,7 +202,23 @@ async def main():
     assert "biroz kuting" in text and "Tayyor" in text, text
     print("[9] fayl kutilayotganda oraliq xabar alohida yuborildi OK")
 
-    print("\nlong_reply: barcha tekshiruvlar o'tdi (9/9).")
+    # ═══════════════════════════════════════════════════════════════
+    # 10) "⏳ Javob tayyorlanmoqda..." xabari OSILIB QOLMAYDI
+    #
+    # Draft yiqilganda o'rniga oddiy kutish xabari yaratiladi va unga
+    # yarim javob yoziladi ("...12 sl ✍️"). Yakuniy javob rich yo'l bilan
+    # ketsa, o'sha yarim xabar chatda o'sha holida qolib ketardi.
+    # ═══════════════════════════════════════════════════════════════
+    m.bot.deleted.clear()
+    msg = FakeMessage()
+    text, rich_calls = await run_stream(msg, ["D" * 200], rich_ok=True)
+    kutish = [t for _, t, _ in msg.sent if "tayyorlanmoqda" in t]
+    assert kutish, "zaxira kutish xabari yaratilmagan — test sharti buzilgan"
+    assert m.bot.deleted == [999], (
+        f"yarim qolgan kutish xabari o'chirilmadi: {m.bot.deleted}")
+    print("[10] osilib qolgan kutish xabari o'chirildi OK")
+
+    print("\nlong_reply: barcha tekshiruvlar o'tdi (10/10).")
 
 
 if __name__ == "__main__":

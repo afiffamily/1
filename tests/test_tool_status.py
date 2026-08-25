@@ -253,7 +253,31 @@ async def main():
         f"har raundda emas, BIR MARTA yuborilishi kerak: {chunks}")
     print("[8] fayl kutishidan oldingi matn foydalanuvchiga yuboriladi OK")
 
-    print("\ntool_status: barcha tekshiruvlar o'tdi (8/8).")
+    # ═══════════════════════════════════════════════════════════════
+    # 9) HAR BIR tool raundidan keyin ekran tozalanadi
+    #
+    # Ilgari qidiruv `needs_clear` ro'yxatida yo'q edi va faqat
+    # _SYNTHESIS_SYSTEM BIRINCHI marta qo'shilganda tozalardi. Ikkinchi
+    # qidiruv raundidan keyin matn qolib ketib, keyingi bosqichda
+    # yozilganiga yopishardi — foydalanuvchi bitta xabarda ikkita
+    # "...tayyorlayapman" jumlasini ko'rgan (jonli nosozlik).
+    # ═══════════════════════════════════════════════════════════════
+    chunks, searches = await run_case([
+        [FakeEvent("response.output_text.delta", delta="Birinchi jumla."),
+         *tool_call("internet_search", {"primary_query": "a"}, "c1")],
+        [FakeEvent("response.output_text.delta", delta="Ikkinchi jumla."),
+         *tool_call("internet_search", {"primary_query": "b"}, "c2")],
+        [text],
+    ])
+    assert chunks.count("[CLEAR_TEXT]") == 2, (
+        f"har bir qidiruv raundidan keyin tozalanishi kerak: {chunks}")
+    for i, bo_lak in enumerate(chunks):
+        if bo_lak == "Ikkinchi jumla.":
+            assert "[CLEAR_TEXT]" in chunks[:i], (
+                "birinchi jumla ikkinchisidan OLDIN tozalanishi kerak")
+    print("[9] har bir tool raundidan keyin oraliq matn tozalandi OK")
+
+    print("\ntool_status: barcha tekshiruvlar o'tdi (9/9).")
 
 
 if __name__ == "__main__":

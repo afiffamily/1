@@ -2573,7 +2573,16 @@ async def get_openai_reply(
         # Tool'dan OLDIN yozilgan oraliq matn ("Hozir tayyorlab beraman...")
         # yakuniy javobga yopishib qolmasligi uchun ekranni tozalaymiz —
         # keyingi bosqichda model javobni boshidan qayta yozadi.
-        needs_clear = file_task_ran or image_ran or memory_ran or reminder_ran
+        #
+        # ⚠️ HAR QANDAY tooldan keyin tozalanadi. Ilgari qidiruv ro'yxatda
+        # yo'q edi (u faqat `_SYNTHESIS_SYSTEM` birinchi marta qo'shilganda
+        # tozalardi), shuning uchun IKKINCHI qidiruv raundidan keyin matn
+        # qolib ketardi va keyingi bosqichda yozilganiga YOPISHIB olardi:
+        # foydalanuvchi bitta xabarda ikkita "…tayyorlayapman" jumlasini
+        # ko'rardi. Bu yergacha yetib kelish tool ishlaganini bildiradi
+        # (yuqorida `if not got_function_call: return`), ya'ni shartga
+        # hojat yo'q.
+        needs_clear = True
 
         # ⚠️ `_SYNTHESIS_SYSTEM` FAQAT internet qidiruvi natijalarini
         # formatlash uchun (manbalar ro'yxati, emoji, kamida 3-5 xat boshi).
