@@ -269,6 +269,40 @@ async def run_in_sandbox(
         shutil.rmtree(tmp_dir, ignore_errors=True)
 
 
+# Sandbox ichida GPT yozgan kod tayanadigan kutubxonalar. Ro'yxat
+# `run_python_sandbox` tool tavsifidagi va'da bilan bir xil bo'lishi kerak.
+SANDBOX_LIBRARIES = (
+    "pptx", "docx", "openpyxl", "xlrd", "xlwt", "reportlab", "pypdf",
+    "matplotlib", "PIL", "pandas", "fitz", "bs4", "lxml",
+)
+
+
+async def check_libraries() -> list[str]:
+    """Kutubxonalar HAQIQATDA import bo'ladimi. Muammolar ro'yxatini qaytaradi.
+
+    ⚠️ Ota jarayonda `import pptx` qilib tekshirish YETARLI EMAS: sandbox
+    bola jarayoni `-s -E -X utf8` bilan, tozalangan muhitda va boshqa
+    ish papkasida ishlaydi.
+
+    NEGA KERAK: `python-pptx` serverda import bo'lmay qolgan edi va buni
+    hech narsa bildirmadi — model jimgina PDF ga o'tib ketdi, ya'ni
+    foydalanuvchi taqdimot so'rab PDF olardi. Endi bu ishga tushishda
+    logda ko'rinadi.
+    """
+    kod = (
+        "import importlib\n"
+        f"for m in {list(SANDBOX_LIBRARIES)!r}:\n"
+        "    try:\n"
+        "        importlib.import_module(m)\n"
+        "    except Exception as e:\n"
+        "        print(f'{m}: {type(e).__name__}: {e}')\n"
+    )
+    result = await run_in_sandbox(kod)
+    if not result.success:
+        return [f"tekshiruvning o'zi yiqildi: {result.traceback[:300]}"]
+    return [line.strip() for line in result.stdout.splitlines() if line.strip()]
+
+
 def _kill_process_tree(proc) -> None:
     """Timeoutda butun jarayon guruhini o'ldiradi (bola jarayonlar bilan)."""
     try:

@@ -1668,7 +1668,13 @@ async def _run_file_task(
         )
 
     if not result.success:
-        logger.info(f"[FileTask] round={round_num} XATO: {result.traceback[:200]}")
+        # ⚠️ Traceback'ning BOSHI emas, OXIRI logga tushadi: xatoning
+        # o'zi (turi va xabari) doim oxirgi satrda turadi, boshidagi
+        # 200 belgi esa faqat freymlar bo'lib, aynan kerakli xabar
+        # kesilib qolardi. `import pptx` yiqilganda logda "from pptx
+        # import Pre" degan foydasiz bo'lak ko'rinib turgan edi.
+        _xato_satri = (result.traceback.strip().splitlines() or ["?"])[-1].strip()
+        logger.info(f"[FileTask] round={round_num} XATO: {_xato_satri[:300]}")
         return (
             f"XATO — kod bajarilmadi:\n{result.traceback[:3000]}"
             + images_note + "\n\n"

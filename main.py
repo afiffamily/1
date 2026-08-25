@@ -27,6 +27,7 @@ from handlers import pro as pro_module
 from handlers import digest as digest_module
 from handlers.helpers import premium_expiry_watcher, reminder_watcher
 from services import menu as menu_module
+from services import sandbox
 
 general_router = Router(name="general")
 
@@ -49,6 +50,21 @@ async def main():
         )
     else:
         logger.info("✅ Guest Mode (guest_message) aiogram tomonidan qo'llab-quvvatlanadi.")
+
+    # Sandbox kutubxonalari joyidami — hujjat yaratish shularga tayanadi.
+    # Yiqilsa bot baribir ishlaydi (tekshiruv hech narsani to'xtatmaydi),
+    # lekin sabab logda ANIQ ko'rinadi. Ilgari python-pptx import
+    # bo'lmay qolganda model jimgina PDF ga o'tib ketardi.
+    try:
+        nosozliklar = await sandbox.check_libraries()
+        if nosozliklar:
+            for satr in nosozliklar:
+                logger.error(f"⚠️ [Sandbox] kutubxona ishlamaydi — {satr}")
+        else:
+            logger.info(f"✅ Sandbox kutubxonalari joyida "
+                        f"({len(sandbox.SANDBOX_LIBRARIES)} ta).")
+    except Exception as e:
+        logger.warning(f"[Sandbox] kutubxona tekshiruvi bajarilmadi: {e}")
 
     # ═══════════════════════════════════════════════════════════════
     #  ⏹ "TO'XTATISH" TUGMASI (Bot API 10.3)
