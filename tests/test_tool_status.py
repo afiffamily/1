@@ -219,7 +219,41 @@ async def main():
             f"'{kind}' matnlari nuqta bilan tugamasin — animatsiya o'zi qo'shadi")
     print(f"[7] {len(emitted)} ta status turining matni va emojisi joyida OK")
 
-    print("\ntool_status: barcha tekshiruvlar o'tdi (7/7).")
+    # ═══════════════════════════════════════════════════════════════
+    # 8) FAYL VAZIFASI: kutishdan OLDIN matn yuboriladi
+    #
+    # Fayl 1-2 daqiqa tayyorlanadi. Ilgari tool'dan oldin yozilgan matn
+    # [CLEAR_TEXT] bilan tashlab yuborilardi va foydalanuvchi shuncha vaqt
+    # faqat aylanayotgan statusni ko'rardi. [FLUSH_TEXT] o'sha matnni
+    # KUTISHDAN OLDIN alohida xabar qilib yuborishga buyruq beradi —
+    # shuning uchun u [STATUS]file_task dan OLDIN kelishi shart.
+    # ═══════════════════════════════════════════════════════════════
+    async def fake_file_task(*a, **k):
+        return "BAJARILDI. Fayl yaratildi: t.pptx"
+
+    real_ft = services._run_file_task
+    services._run_file_task = fake_file_task
+    try:
+        chunks, _ = await run_case([
+            [FakeEvent("response.output_text.delta",
+                       delta="12 slaydlik taqdimot tayyorlayapman, biroz kuting."),
+             *tool_call("run_python_sandbox", {"code": "print(1)"})],
+            [FakeEvent("response.output_text.delta", delta="Tayyor.")],
+        ], is_pro=True)
+    finally:
+        services._run_file_task = real_ft
+
+    assert "[FLUSH_TEXT]" in chunks, f"kutishdan oldingi matn yuborilmadi: {chunks}"
+    assert chunks.index("[FLUSH_TEXT]") < chunks.index("[STATUS]file_task"), (
+        "[FLUSH_TEXT] status almashishidan OLDIN kelishi kerak")
+    assert chunks.index("[FLUSH_TEXT]") > chunks.index(
+        "12 slaydlik taqdimot tayyorlayapman, biroz kuting."), (
+        "matn to'liq kelmasdan turib yuborib bo'lmaydi")
+    assert chunks.count("[FLUSH_TEXT]") == 1, (
+        f"har raundda emas, BIR MARTA yuborilishi kerak: {chunks}")
+    print("[8] fayl kutishidan oldingi matn foydalanuvchiga yuboriladi OK")
+
+    print("\ntool_status: barcha tekshiruvlar o'tdi (8/8).")
 
 
 if __name__ == "__main__":

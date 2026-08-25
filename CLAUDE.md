@@ -63,6 +63,8 @@ Tools: `internet_search`, `run_python_sandbox`, `generate_image`, `update_memory
 
 `get_vision_reply()` is a **separate, single-round** path — the memory tool call is harvested after the stream and its result is not fed back. Adding a full loop there means porting the `pending_calls` block.
 
+Two control signals travel through the same chunk stream as content, and their order is load-bearing. `[CLEAR_TEXT]` is emitted **after** a tool ran and throws away the model's pre-tool chatter so it doesn't stick to the final answer. `[FLUSH_TEXT]` is emitted **before** the file tool runs (right at `response.output_item.added`, so the preamble has finished streaming) and does the opposite: it sends that text as a real message immediately, then `process_stream_draft` restarts the animator with the *original* `start_ts` so the elapsed counter stays continuous. Without it a document request showed nothing but a spinner for the 1-2 minutes the sandbox takes. It fires once per request (`file_task_started`), so later rounds still go through `[CLEAR_TEXT]`. Anything flushed this way is appended to the value `process_stream_draft` returns — that value feeds history *and* the "nothing was delivered, refund the points" guard.
+
 ### Photos: two separate pipelines that must not be confused
 
 A photo in a **chat reply** and a photo **inside a document** share nothing but the search call, and mixing them up is the failure mode users actually hit.

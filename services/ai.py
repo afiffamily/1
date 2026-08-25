@@ -1409,6 +1409,14 @@ _FILE_TASK_TOOL = {
         "QACHON ISHLATMASLIK KERAK: agar foydalanuvchi shunchaki fayl "
         "haqida savol bersa yoki mazmunini so'rasa — bu tool KERAK EMAS, "
         "oddiy matnli javob bering.\n\n"
+        "⏱ CHAQIRISHDAN OLDIN 1-2 GAP YOZING. Bu tool 1-2 daqiqa ishlaydi "
+        "va o'sha matn foydalanuvchiga DARHOL, alohida xabar bo'lib "
+        "yuboriladi — u shuncha vaqt nima bo'layotganini bilib turadi. "
+        "Nima tayyorlayotganingizni va biroz kutish kerakligini ayting, "
+        "masalan: «Birinchi jahon urushi bo'yicha 12 slaydlik taqdimot "
+        "tayyorlayapman — rasmlar va asosiy raqamlar bilan. Bir necha "
+        "daqiqa vaqt oladi.» Faqat shu — reja, slaydlar ro'yxati yoki "
+        "hujjatning mazmunini bu matnda YOZMANG.\n\n"
         "⛔️ RASM SO'RALGANDA BU TOOLNI CHAQIRMANG. «rasm bilan ber», "
         "«rasmini ko'rsat», «suratlari bilan», «rasm yubor» — bularning "
         "HAMMASI chatga rasm yuborish, ya'ni `internet_search` toolini "
@@ -2408,6 +2416,14 @@ async def get_openai_reply(
                         _call_name = getattr(event.item, "name", None)
                         if _call_name == "run_python_sandbox":
                             if not file_task_started:
+                                # Fayl 1-2 daqiqa tayyorlanadi. Model tool'dan
+                                # OLDIN yozgan matn ("...tayyorlayapman, biroz
+                                # kuting") shu yerda foydalanuvchiga alohida
+                                # xabar qilib yuboriladi — ilgari u pastdagi
+                                # [CLEAR_TEXT] bilan tashlab yuborilardi va
+                                # foydalanuvchi butun kutish davomida faqat
+                                # aylanayotgan statusni ko'rardi.
+                                yield "[FLUSH_TEXT]"
                                 yield "[STATUS]file_task"
                                 file_task_started = True
                         elif _call_name == "generate_image":

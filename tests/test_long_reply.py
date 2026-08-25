@@ -162,7 +162,30 @@ async def main():
     assert text.startswith("C"), "matn baribir qaytarilishi kerak (tarixga yoziladi)"
     print("[8] hamma kanal yiqilganda ham istisno ko'tarilmadi OK")
 
-    print("\nlong_reply: barcha tekshiruvlar o'tdi (8/8).")
+    # ═══════════════════════════════════════════════════════════════
+    # 9) [FLUSH_TEXT] — fayl kutilayotganda oraliq xabar
+    #
+    # Fayl 1-2 daqiqa tayyorlanadi. Tool'dan oldingi matn ALOHIDA xabar
+    # bo'lib darhol ketishi, yakuniy javob esa ikkinchi xabar bo'lishi
+    # kerak — ikkalasi bitta xabarga qo'shilib qolmasin.
+    # ═══════════════════════════════════════════════════════════════
+    msg = FakeMessage()
+    text, rich_calls = await run_stream(msg, [
+        "Taqdimot tayyorlayapman, biroz kuting.",
+        "[FLUSH_TEXT]",
+        "[STATUS]file_task",
+        "Tayyor — faylni yubordim.",
+    ], rich_ok=True)
+    assert len(rich_calls) == 2, f"ikkita alohida xabar kutilgan edi: {rich_calls}"
+    assert "biroz kuting" in rich_calls[0], rich_calls[0]
+    assert "Tayyor" in rich_calls[1], rich_calls[1]
+    assert "biroz kuting" not in rich_calls[1], (
+        "oraliq matn yakuniy javobda TAKRORLANMASLIGI kerak")
+    # Ikkalasi ham tarixga tushsin — foydalanuvchi ikkalasini ham ko'rgan.
+    assert "biroz kuting" in text and "Tayyor" in text, text
+    print("[9] fayl kutilayotganda oraliq xabar alohida yuborildi OK")
+
+    print("\nlong_reply: barcha tekshiruvlar o'tdi (9/9).")
 
 
 if __name__ == "__main__":
