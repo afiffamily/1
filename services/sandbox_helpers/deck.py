@@ -34,7 +34,7 @@ import os
 
 from pptx import Presentation
 from pptx.dml.color import RGBColor
-from pptx.enum.shapes import MSO_SHAPE
+from pptx.enum.shapes import MSO_SHAPE, MSO_SHAPE_TYPE
 from pptx.enum.text import MSO_ANCHOR, PP_ALIGN
 from pptx.oxml import parse_xml
 from pptx.oxml.ns import nsdecls, qn
@@ -117,6 +117,47 @@ def _para(tf, text, size, color, bold=False, space_after=6,
     f.name, f.size, f.bold = FONT, Pt(size), bold
     f.color.rgb = _rgb(color)
     return p
+
+
+# ── MATN METRIKASI ──────────────────────────────────────────────
+# NEGA TAXMINIY: PPTX ichida haqiqiy shrift metrikasi yo'q (PDF tomonda
+# docgen uni reportlab'dan oladi, bu yerda unday manba yo'q). Calibri
+# uchun o'rtacha belgi kengligi ≈ 0.5×shrift o'lchami — xato ~5%, u esa
+# chiqib ketishni ushlashga yetarli, chunki quyida 10% zaxira qoldiriladi.
+#
+# BUSIZ: uzun sarlavha yoki uzun band qutidan chiqib, keyingi blok ustiga
+# tushadi. Model buni HECH QACHON o'zi hisoblamaydi — u shunchaki matn
+# yozadi va sig'ish-sig'masligini tekshirmaydi.
+EMU_PT = 12700          # 1 punkt = 12700 EMU
+LINE_SPACING = 1.22     # Calibri qatorlar orasi
+
+
+def _est_lines(text, size_pt, width_emu):
+    if not text:
+        return 1
+    per_line = max(1, int(width_emu / (0.5 * size_pt * EMU_PT)))
+    return max(1, -(-len(str(text)) // per_line))
+
+
+def _est_height(paras, width_emu):
+    """paras — (matn, shrift_pt, space_after_pt) uchliklari ro'yxati."""
+    total = 0.0
+    for text, size, space_after in paras:
+        total += _est_lines(text, size, width_emu) * size * LINE_SPACING * EMU_PT
+        total += space_after * EMU_PT
+    return int(total)
+
+
+def _shrink(build, width_emu, height_emu, size, floor=10):
+    """`build(size)` paragraflar ro'yxatini qaytaradi; sig'maguncha kichraytiradi.
+
+    10% zaxira: metrika taxminiy, chegaraga tegib turgan matn haqiqiy
+    PowerPoint'da baribir chiqib ketishi mumkin.
+    """
+    limit = height_emu * 0.90
+    while size > floor and _est_height(build(size), width_emu) > limit:
+        size -= 1
+    return size
 
 
 def _fit_box(img_path, box_l, box_t, box_w, box_h):
@@ -323,8 +364,11 @@ class Deck:
 
     def _title(self, slide, text, top=None, size=34):
         top = MARGIN if top is None else top
-        tf = _textbox(slide, MARGIN + Inches(0.28), top,
-                      SLIDE_W - 2 * MARGIN - Inches(0.28), Inches(0.9))
+        w = SLIDE_W - 2 * MARGIN - Inches(0.28)
+        # Uzun sarlavha ikkinchi qatorga tushib, ostidagi kontent ustiga
+        # chiqardi. Endi qutiga sig'maguncha shrift kichrayadi.
+        size = _shrink(lambda sz: [(text, sz, 0)], w, Inches(0.9), size, floor=20)
+        tf = _textbox(slide, MARGIN + Inches(0.28), top, w, Inches(0.9))
         _para(tf, text, size, self.t["fg"], bold=True, first=True)
         self._accent_bar(slide, top + Inches(0.06), Inches(0.62))
         return top + Inches(1.0)
@@ -432,8 +476,23 @@ class Deck:
         size = 20 if len(items) <= 4 else (17 if len(items) <= 6 else 14)
         if image:
             size -= 2                     # ustun ikki barobar tor
-        tf = _textbox(s, inner_l, inner_top, inner_w,
-                      body_top + frame_h - inner_top - pad)
+
+        # Band SONI emas, UZUNLIGI ham muhim: uchta uzun band to'rtta
+        # qisqasidan ko'proq joy egallaydi. Model band matnini qisqartirmaydi,
+        # shuning uchun sig'ishni modul o'zi ta'minlaydi.
+        def _paras(sz):
+            out = []
+            for it in items:
+                if isinstance(it, (tuple, list)) and len(it) >= 2:
+                    out.append((f"▸  {it[0]}", sz, 2))
+                    out.append((f"     {it[1]}", sz - 3, 10))
+                else:
+                    out.append((f"▸  {it}", sz, 10))
+            return out
+
+        avail_h = body_top + frame_h - inner_top - pad
+        size = _shrink(_paras, inner_w, avail_h, size, floor=11)
+        tf = _textbox(s, inner_l, inner_top, inner_w, avail_h)
         for i, item in enumerate(items):
             if isinstance(item, (tuple, list)) and len(item) >= 2:
                 head, note = item[0], item[1]
@@ -618,14 +677,147 @@ class Deck:
             except Exception:
                 pass
 
-    def save(self, path):
-        """Faylni saqlaydi. Papka yo'q bo'lsa yaratadi."""
+    def save(self, path, verify=True):
+        """Faylni saqlaydi va sifat tekshiruvidan o'tkazadi.
+
+        Hisobot stdout'ga chiqadi, ya'ni sandbox orqali modelga qaytadi.
+        `verify=False` — faqat testlar uchun.
+        """
         self._add_transitions()
         folder = os.path.dirname(path)
         if folder:
             os.makedirs(folder, exist_ok=True)
         self.prs.save(path)
+        if verify:
+            self.report()
         return path
+
+    def report(self):
+        """Tekshiruv hisoboti. Muammolar ro'yxatini qaytaradi."""
+        slides = list(self.prs.slides)
+        pics = sum(1 for sl in slides for sh in sl.shapes
+                   if sh.shape_type == MSO_SHAPE_TYPE.PICTURE)
+        issues = check(self.prs)
+        print(f"[TEKSHIRUV] {len(slides)} slayd, {pics} rasm, "
+              f"{len(issues)} muammo")
+        for m in issues:
+            print("  - " + m)
+        if issues:
+            # Bu belgi bo'yicha _run_file_task modeldan tuzatish so'raydi.
+            print(ISSUE_MARKER)
+        return issues
+
+
+# ── SIFAT TEKSHIRUVI ────────────────────────────────────────────
+# Tayyor faylni ilgari HECH KIM tekshirmasdi: kod xatosiz ishlagan bo'lsa
+# "tayyor" deb hisoblanardi. Bu yerdagi tekshiruvlar AI chaqiruvi talab
+# qilmaydi — sof geometriya va matn hisobi, ya'ni tekin va bir xilda
+# takrorlanadi. Topilgan muammolar stdout orqali modelga qaytadi, u esa
+# mavjud raund siklida ularni tuzatadi.
+ISSUE_MARKER = "DECK-CHECK-MUAMMO"
+MAX_WORDS_PER_SLIDE = 40      # "tomoshabin 3 soniyada tushunsin" qoidasi
+_PLACEHOLDERS = ("lorem ipsum", "todo", "tbd", "matn kiriting", "xxx",
+                 "namuna matn", "placeholder")
+
+
+def _content_shapes(slide):
+    """Fon to'ldiruvchisi va fon rasmisiz — faqat kontent shakllari."""
+    return [sh for sh in slide.shapes
+            if not ((sh.width or 0) >= SLIDE_W * 0.99
+                    and (sh.height or 0) >= SLIDE_H * 0.99)]
+
+
+def _slide_title(slide):
+    """Slayd sarlavhasi — birinchi yirik (28pt+) matn.
+
+    Faqat raqamdan iborat matn o'tkazib yuboriladi: `section` maketidagi
+    katta "01" va `stats` kartochkalaridagi raqamlar sarlavha emas.
+    """
+    for sh in _content_shapes(slide):
+        if not sh.has_text_frame:
+            continue
+        for p in sh.text_frame.paragraphs:
+            txt = p.text.strip()
+            if p.font.size is not None and p.font.size >= Pt(28) and txt                     and not txt.replace(" ", "").isdigit():
+                return txt.lower()
+    return None
+
+
+def _slide_words(slide):
+    """Altbet va manba yozuvi (11pt dan kichik) hisobga olinmaydi."""
+    n = 0
+    for sh in _content_shapes(slide):
+        if not sh.has_text_frame:
+            continue
+        for p in sh.text_frame.paragraphs:
+            if p.font.size is not None and p.font.size < Pt(11):
+                continue
+            n += len(p.text.split())
+    return n
+
+
+def check(prs):
+    """Tayyor taqdimotni tekshiradi. Muammolar ro'yxatini qaytaradi."""
+    issues, seen_titles = [], {}
+    slides = list(prs.slides)
+    if len(slides) < 6:
+        issues.append(f"Taqdimot juda qisqa: {len(slides)} slayd "
+                      f"(8-14 slayd kutiladi)")
+    elif len(slides) > 20:
+        issues.append(f"Taqdimot juda uzun: {len(slides)} slayd "
+                      f"(8-14 slayd kutiladi)")
+
+    tol = Inches(0.02)         # yaxlitlash xatosi uchun zaxira
+    for i, sl in enumerate(slides, 1):
+        shapes = _content_shapes(sl)
+
+        # TEXNIK: element slayddan chiqib ketmasin.
+        for sh in shapes:
+            l, t = sh.left or 0, sh.top or 0
+            if (l < -tol or t < -tol
+                    or l + (sh.width or 0) > SLIDE_W + tol
+                    or t + (sh.height or 0) > SLIDE_H + tol):
+                issues.append(f"{i}-slayd: element slayd chegarasidan chiqqan")
+                break
+
+        # VIZUAL: ustma-ustlik. Kartochka (AUTO_SHAPE) ataylab matn
+        # ostida turadi — u fon vazifasini bajaradi, hisobga olinmaydi.
+        boxes = [(sh.left or 0, sh.top or 0, sh.width or 0, sh.height or 0)
+                 for sh in shapes if sh.shape_type != MSO_SHAPE_TYPE.AUTO_SHAPE]
+        clash = False
+        for a in range(len(boxes)):
+            al, at, aw, ah = boxes[a]
+            for b in range(a + 1, len(boxes)):
+                bl, bt, bw, bh = boxes[b]
+                if not (al + aw <= bl or bl + bw <= al
+                        or at + ah <= bt or bt + bh <= at):
+                    clash = True
+                    break
+            if clash:
+                break
+        if clash:
+            issues.append(f"{i}-slayd: ikki element ustma-ust tushgan")
+
+        # MAZMUN: so'z soni, namunaviy matn, takroriy sarlavha.
+        words = _slide_words(sl)
+        if words > MAX_WORDS_PER_SLIDE:
+            issues.append(f"{i}-slayd: {words} so'z (chegara "
+                          f"{MAX_WORDS_PER_SLIDE}) — matnni qisqartiring")
+        text = " ".join(sh.text_frame.text for sh in shapes
+                        if sh.has_text_frame).lower()
+        for ph in _PLACEHOLDERS:
+            if ph in text:
+                issues.append(f"{i}-slayd: namunaviy matn qolib ketgan "
+                              f"('{ph}')")
+                break
+        head = _slide_title(sl)
+        if head:
+            if head in seen_titles:
+                issues.append(f"{i}-slayd: sarlavha {seen_titles[head]}-slayd "
+                              f"bilan bir xil ('{head}')")
+            else:
+                seen_titles[head] = i
+    return issues
 
 
 def demo(path="output/demo.pptx"):
@@ -651,4 +843,28 @@ if __name__ == "__main__":
     assert len(reopened.slides.__iter__.__self__._sldIdLst) == 7, "slayd soni xato"
     print(f"[1] demo() {len(reopened.slides.__iter__.__self__._sldIdLst)} slayd OK")
     print(f"[2] fayl qayta ochildi ({os.path.getsize(out) // 1024} KB) OK")
+
+    # 3) Uzun sarlavha va uzun bandlar qutidan CHIQMASIN (avtomatik kichrayish).
+    uzun = "Juda uzun sarlavha " * 6
+    d2 = Deck("Tekshiruv", footer="T")
+    d2.bullets(uzun, [("Band " + "juda uzun matn " * 8, "Izoh " * 20)] * 4)
+    sl = list(d2.prs.slides)[0]
+    sarlavha = next(p for sh in _content_shapes(sl) if sh.has_text_frame
+                    for p in sh.text_frame.paragraphs if uzun.strip() in p.text)
+    assert sarlavha.font.size < Pt(34), "uzun sarlavha kichraymadi"
+    print(f"[3] uzun sarlavha {sarlavha.font.size.pt:.0f}pt gacha kichraydi OK")
+
+    # 4) check() haqiqiy muammoni TOPSIN — aks holda u bezak bo'lib qoladi.
+    d3 = Deck("Tekshiruv", footer="T")
+    d3.bullets("Bir xil sarlavha", [("A", "B")])
+    d3.bullets("Bir xil sarlavha", [("C", "D")])
+    d3.quote("TODO: bu yerga matn kiritilsin", "Muallif")
+    muammo = check(d3.prs)
+    assert any("bir xil" in m for m in muammo), muammo
+    assert any("namunaviy" in m for m in muammo), muammo
+    assert any("qisqa" in m for m in muammo), muammo
+    print(f"[4] check() {len(muammo)} ta muammoni topdi OK")
+
+    assert not check(Presentation(out)), "toza taqdimotda muammo topildi"
+    print("[5] toza taqdimot tekshiruvdan o'tdi OK")
     print("✅ deck.py ishlayapti")

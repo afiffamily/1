@@ -331,7 +331,49 @@ async def main():
     assert "internet_search" not in names_4, f"qidiruv byudjeti tugashi kerak edi: {names_4}"
     print("[8] qidiruv fayl byudjetini yemaydi OK")
 
-    print("\nfile_task_loop: barcha tekshiruvlar o'tdi (8/8).")
+    # ═══════════════════════════════════════════════════════════════
+    # 9-10) SIFAT TEKSHIRUVI (deck.check)
+    #
+    # Ilgari kod xatosiz ishlasa ish tugagan hisoblanardi — slaydda 60 ta
+    # so'z bo'lsa ham, ikki sarlavha bir xil bo'lsa ham. Endi `deck.save()`
+    # hisobot chiqaradi va model uni TUZATADI. Ammo oxirgi raundda tuzatish
+    # so'ralmaydi: foydalanuvchi kamchiliksiz emas, hech qanday faylsiz
+    # qolib ketardi.
+    # ═══════════════════════════════════════════════════════════════
+    hisobot = ("[TEKSHIRUV] 9 slayd, 2 rasm, 1 muammo\n"
+               "  - 3-slayd: 58 so'z (chegara 40) — matnni qisqartiring\n"
+               + services.DECK_ISSUE_MARKER)
+
+    async def fake_run(code, *a, **kw):
+        return types.SimpleNamespace(success=True, stdout=hisobot, traceback="",
+                                     output_files=[("t.pptx", b"PPTX-1")])
+
+    real_run = services.run_in_sandbox
+    services.run_in_sandbox = fake_run
+    try:
+        fayllar = []
+        msg = await services._run_file_task(
+            "kod", quota=None, input_file_bytes=None, input_filename=None,
+            output_files=fayllar, round_num=1, rounds_left=3)
+        assert "SIFAT TEKSHIRUVI MUAMMO TOPDI" in msg, msg
+        assert "58 so'z" in msg, msg
+        assert fayllar == [("t.pptx", b"PPTX-1")], fayllar
+
+        oxirgi = await services._run_file_task(
+            "kod", quota=None, input_file_bytes=None, input_filename=None,
+            output_files=[], round_num=4, rounds_left=1)
+        assert oxirgi.startswith("BAJARILDI"), oxirgi
+        print("[9] sifat tekshiruvi modelga qaytdi, oxirgi raundda emas OK")
+
+        services._merge_output(fayllar, [("t.pptx", b"PPTX-2")])
+        assert fayllar == [("t.pptx", b"PPTX-2")], fayllar
+        services._merge_output(fayllar, [("boshqa.pdf", b"PDF")])
+        assert len(fayllar) == 2, fayllar
+        print("[10] tuzatilgan fayl eskisining o'rnini oldi OK")
+    finally:
+        services.run_in_sandbox = real_run
+
+    print("\nfile_task_loop: barcha tekshiruvlar o'tdi (10/10).")
 
 
 async def _fake_search():

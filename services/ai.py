@@ -1196,6 +1196,29 @@ _DOC_DESIGN_GUIDE = (
     "Foydalanuvchi hujjat/taqdimot so'raganda natija PROFESSIONAL "
     "ko'rinishda bo'lishi SHART. Oddiy oq fonli, faqat qora matnli natija "
     "QABUL QILINMAYDI.\n\n"
+    "0) ISH TARTIBI — SHU KETMA-KETLIKDA, BOSQICHNI TASHLAB KETMANG:\n"
+    "   a) TAHLIL: mavzu nima, kim uchun (o'quvchi/talaba/biznes), necha "
+    "slayd, qaysi til.\n"
+    "   b) FAKT KERAKMI? Sana, raqam, statistika, ism yoki joriy voqea "
+    "bo'lsa — AVVAL `internet_search` chaqiring. Xotiradan yozilgan raqam "
+    "eskirgan yoki xato bo'ladi, taqdimotni baholaydigan odam esa aynan "
+    "shuni tekshiradi. Umumiy/abstrakt mavzuda ('do'stlik haqida') qidiruv "
+    "shart emas.\n"
+    "   c) Topilgan faktni ISHLATING: har bir raqam va sana slaydda "
+    "ko'rinsin — taqdimotni ishonarli qiladigan narsa shu.\n"
+    "   d) HIKOYA CHIZIG'I: muammo → sabab → dalil (raqam) → yechim → "
+    "xulosa. Har slaydga BITTA fikr. Kod yozishdan OLDIN o'zingiz uchun "
+    "reja tuzing: qaysi slaydda qaysi maket, qaysi raqam, qaysi rasm.\n"
+    "   e) RASM: `image_queries` da 5-8 ta aniq so'rov.\n"
+    "   f) Ma'lumot bo'lsa kamida 1 ta diagramma: matplotlib → PNG → "
+    "`d.image_slide(...)`.\n"
+    "   g) `deck` maketlari bilan yig'ing va `d.save(...)` qiling.\n"
+    "   h) `d.save(...)` faylni SIFAT TEKSHIRUVIDAN o'tkazadi va hisobotni "
+    "stdout'ga chiqaradi: slayd soni, ustma-ustlik, slayddagi so'z soni, "
+    "takroriy sarlavha, namunaviy matn. Muammo ko'rsatilsa — TUZATING va "
+    "aynan o'sha fayl nomi bilan qayta saqlang. Ish «0 muammo» hisoboti "
+    "chiqqandagina tugagan hisoblanadi.\n\n"
+
     "1) FORMATNI TO'G'RI TANLANG:\n"
     "   - 'prezentatsiya', 'taqdimot', 'slayd' → PPTX (python-pptx), "
     "16:9 (13.333 x 7.5 dyuym). PDF QILMANG, chunki PPTX tahrirlanadi.\n"
@@ -1542,6 +1565,27 @@ _RESEARCH_SYSTEM = """CHUQUR TADQIQOT REJIMI — QAT'IY TARTIB:
 # buzilibdi" degan taassurot beradi, shuning uchun taqiq HAR BIR
 # muvaffaqiyatsiz yo'lga qo'shiladi — model aynan o'sha paytda
 # "tushuntirish" yozadi.
+# `deck.save()` tayyor faylni tekshiradi va muammo topsa stdout'ga shu
+# belgini chiqaradi (manba: services/sandbox_helpers/deck.py).
+DECK_ISSUE_MARKER = "DECK-CHECK-MUAMMO"
+
+
+def _merge_output(dest: list, new: list) -> None:
+    """Bir xil nomli fayl QAYTA yaratilsa, eskisining o'rnini oladi.
+
+    Sifat tekshiruvidan keyin model faylni o'sha nom bilan qayta saqlaydi.
+    Oddiy `extend` bo'lganda foydalanuvchi bitta hujjatning ikki nusxasini
+    olardi — tuzatilmagani va tuzatilgani.
+    """
+    for name, data in new:
+        for i, (old_name, _) in enumerate(dest):
+            if old_name == name:
+                dest[i] = (name, data)
+                break
+        else:
+            dest.append((name, data))
+
+
 _NO_INTERNALS = (
     "\n\n🔒 JAVOBDA HECH QACHON KO'RSATMANG: xato matni (traceback), kod, "
     "fayl yo'llari, `script.py`/`deck.py`/`docgen` kabi ichki nomlar, tool "
@@ -1645,10 +1689,27 @@ async def _run_file_task(
     if quota is not None:
         quota.mark_success()
     if output_files is not None:
-        output_files.extend(result.output_files)
+        _merge_output(output_files, result.output_files)
 
     names = ", ".join(f"{n} ({len(b)} bayt)" for n, b in result.output_files)
     logger.info(f"[FileTask] round={round_num} muvaffaqiyat: {names}")
+
+    # `deck` sifat tekshiruvi muammo topgan bo'lsa, modelga uni TUZATISH
+    # imkoniyati beriladi. Fayl esa ro'yxatda qoladi: raundlar tugasa ham
+    # foydalanuvchi natijasiz qolmaydi. Qayta saqlangani _merge_output
+    # tufayli eskisining O'RNINI oladi, ikkinchi nusxa bo'lib ketmaydi.
+    if DECK_ISSUE_MARKER in result.stdout and rounds_left > 1:
+        logger.info(f"[FileTask] round={round_num} sifat tekshiruvi muammo topdi")
+        return (
+            f"FAYL YARATILDI ({names}), LEKIN SIFAT TEKSHIRUVI MUAMMO TOPDI:"
+            f"\n{result.stdout[:1500]}" + images_note + "\n\n"
+            "Yuqoridagi HAR BIR muammoni tuzating (matnni qisqartiring, "
+            "takroriy sarlavhani almashtiring, namunaviy matnni haqiqiysiga "
+            "o'zgartiring) va kodni AYNAN O'SHA fayl nomi bilan qayta ishga "
+            "tushiring. Yangi mavzu yoki yangi slayd qo'shmang — faqat "
+            "ko'rsatilgan kamchiliklarni tuzating."
+        )
+
     return (
         f"BAJARILDI. Fayllar yaratildi va foydalanuvchiga avtomatik "
         f"yuboriladi: {names}\nSTDOUT:\n{result.stdout[:1500]}" + images_note + "\n\n"
