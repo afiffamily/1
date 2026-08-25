@@ -220,13 +220,14 @@ async def main():
     print(f"[7] {len(emitted)} ta status turining matni va emojisi joyida OK")
 
     # ═══════════════════════════════════════════════════════════════
-    # 8) FAYL VAZIFASI: kutishdan OLDIN matn yuboriladi
+    # 8) FAYL VAZIFASIDA EKRANDA FAQAT STATUS TURADI
     #
-    # Fayl 1-2 daqiqa tayyorlanadi. Ilgari tool'dan oldin yozilgan matn
-    # [CLEAR_TEXT] bilan tashlab yuborilardi va foydalanuvchi shuncha vaqt
-    # faqat aylanayotgan statusni ko'rardi. [FLUSH_TEXT] o'sha matnni
-    # KUTISHDAN OLDIN alohida xabar qilib yuborishga buyruq beradi —
-    # shuning uchun u [STATUS]file_task dan OLDIN kelishi shart.
+    # Fayl 1-2 daqiqa tayyorlanadi. Shu vaqt davomida foydalanuvchi FAQAT
+    # status ko'rsatkichini ko'rishi kerak: tool'dan oldin yozilgan matn
+    # ("...tayyorlayapman") ekranga chiqmaydi, u [CLEAR_TEXT] bilan
+    # tashlanadi va javob fayl tayyor bo'lgach boshidan yoziladi.
+    # Bir muddat oraliq xabar yuborib ko'rilgan edi — chatda yarim matn
+    # va takroriy jumlalar paydo bo'lgani uchun ATAYLAB qaytarildi.
     # ═══════════════════════════════════════════════════════════════
     async def fake_file_task(*a, **k):
         return "BAJARILDI. Fayl yaratildi: t.pptx"
@@ -236,22 +237,21 @@ async def main():
     try:
         chunks, _ = await run_case([
             [FakeEvent("response.output_text.delta",
-                       delta="12 slaydlik taqdimot tayyorlayapman, biroz kuting."),
+                       delta="Taqdimot tayyorlayapman, biroz kuting."),
              *tool_call("run_python_sandbox", {"code": "print(1)"})],
             [FakeEvent("response.output_text.delta", delta="Tayyor.")],
         ], is_pro=True)
     finally:
         services._run_file_task = real_ft
 
-    assert "[FLUSH_TEXT]" in chunks, f"kutishdan oldingi matn yuborilmadi: {chunks}"
-    assert chunks.index("[FLUSH_TEXT]") < chunks.index("[STATUS]file_task"), (
-        "[FLUSH_TEXT] status almashishidan OLDIN kelishi kerak")
-    assert chunks.index("[FLUSH_TEXT]") > chunks.index(
-        "12 slaydlik taqdimot tayyorlayapman, biroz kuting."), (
-        "matn to'liq kelmasdan turib yuborib bo'lmaydi")
-    assert chunks.count("[FLUSH_TEXT]") == 1, (
-        f"har raundda emas, BIR MARTA yuborilishi kerak: {chunks}")
-    print("[8] fayl kutishidan oldingi matn foydalanuvchiga yuboriladi OK")
+    assert chunks.count("[STATUS]file_task") == 1, (
+        f"status bir marta almashishi kerak: {chunks}")
+    oldingi = chunks.index("Taqdimot tayyorlayapman, biroz kuting.")
+    tozalash = chunks.index("[CLEAR_TEXT]")
+    assert tozalash > oldingi, (
+        "tool'dan oldingi matn tozalanmasa, yakuniy javobga yopishadi")
+    assert chunks.index("Tayyor.") > tozalash, chunks
+    print("[8] fayl tayyorlanayotganda ekranda faqat status qoladi OK")
 
     # ═══════════════════════════════════════════════════════════════
     # 9) HAR BIR tool raundidan keyin ekran tozalanadi

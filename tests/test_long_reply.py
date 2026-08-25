@@ -180,27 +180,24 @@ async def _checks(LIMIT):
     print("[8] hamma kanal yiqilganda ham istisno ko'tarilmadi OK")
 
     # ═══════════════════════════════════════════════════════════════
-    # 9) [FLUSH_TEXT] — fayl kutilayotganda oraliq xabar
+    # 9) FAYL VAZIFASIDA BITTA XABAR — oraliq xabar YO'Q
     #
-    # Fayl 1-2 daqiqa tayyorlanadi. Tool'dan oldingi matn ALOHIDA xabar
-    # bo'lib darhol ketishi, yakuniy javob esa ikkinchi xabar bo'lishi
-    # kerak — ikkalasi bitta xabarga qo'shilib qolmasin.
+    # Fayl tayyorlanayotganda ekranda faqat status turadi. Tool'dan
+    # oldingi matn [CLEAR_TEXT] bilan tashlanadi, foydalanuvchi esa
+    # yakuniy javobni BIR MARTA oladi.
     # ═══════════════════════════════════════════════════════════════
     msg = FakeMessage()
     text, rich_calls = await run_stream(msg, [
         "Taqdimot tayyorlayapman, biroz kuting.",
-        "[FLUSH_TEXT]",
         "[STATUS]file_task",
+        "[CLEAR_TEXT]",
         "Tayyor — faylni yubordim.",
     ], rich_ok=True)
-    assert len(rich_calls) == 2, f"ikkita alohida xabar kutilgan edi: {rich_calls}"
-    assert "biroz kuting" in rich_calls[0], rich_calls[0]
-    assert "Tayyor" in rich_calls[1], rich_calls[1]
-    assert "biroz kuting" not in rich_calls[1], (
-        "oraliq matn yakuniy javobda TAKRORLANMASLIGI kerak")
-    # Ikkalasi ham tarixga tushsin — foydalanuvchi ikkalasini ham ko'rgan.
-    assert "biroz kuting" in text and "Tayyor" in text, text
-    print("[9] fayl kutilayotganda oraliq xabar alohida yuborildi OK")
+    assert len(rich_calls) == 1, f"bitta xabar kutilgan edi: {rich_calls}"
+    assert "biroz kuting" not in rich_calls[0], (
+        "tool'dan oldingi matn ekranga chiqmasligi kerak")
+    assert text.strip() == "Tayyor — faylni yubordim.", text
+    print("[9] fayl vazifasida faqat yakuniy javob yuborildi OK")
 
     # ═══════════════════════════════════════════════════════════════
     # 10) "⏳ Javob tayyorlanmoqda..." xabari OSILIB QOLMAYDI

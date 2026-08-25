@@ -724,10 +724,6 @@ async def process_stream_draft(message: Message, stream_generator, content_type:
     """
     full_text = ""
     chunk_buffer = ""
-    # Tool'dan oldin ALOHIDA xabar qilib yuborilgan matnlar. Ular ham
-    # javobning bir qismi: tarixga yoziladi va "hech narsa yetkazilmadi"
-    # tekshiruvida hisobga olinadi (aks holda ball noo'rin qaytarilardi).
-    interim_texts: list[str] = []
     draft_id = abs(hash((message.chat.id, message.message_id, time.time_ns()))) % 2_147_483_647 or 1
     message_thread_id = getattr(message, "message_thread_id", None)
     # ⚠️ IKKI XIL TALAB, ATAYLAB AJRATILGAN:
@@ -777,12 +773,9 @@ async def process_stream_draft(message: Message, stream_generator, content_type:
             f"{elapsed_label}</tg-thinking>"
         )
 
-    async def emoji_animator(start_ts=None):
-        # `start_ts` — animatsiya QAYTA yoqilganda (fayl tayyorlanayotganda)
-        # sekund hisobi noldan boshlanmasligi uchun: foydalanuvchi uchun
-        # kutish bitta, uzluksiz jarayon.
+    async def emoji_animator():
         nonlocal fallback_message, using_rich_draft
-        start_ts = time.monotonic() if start_ts is None else start_ts
+        start_ts = time.monotonic()
         rich_draft_failures = 0
         last_fallback_text = None
         while not stop_animation.is_set():
@@ -833,30 +826,7 @@ async def process_stream_draft(message: Message, stream_generator, content_type:
             except asyncio.TimeoutError:
                 pass
 
-    anim_started_at = time.monotonic()
-    anim_task = asyncio.create_task(emoji_animator(anim_started_at))
-
-    async def send_interim(text: str) -> None:
-        """Tool ishga tushishidan OLDINGI matnni ALOHIDA xabar qilib yuboradi.
-
-        Faylni tayyorlash 1-2 daqiqa davom etadi. Ilgari bu matn
-        `[CLEAR_TEXT]` bilan tashlab yuborilardi va foydalanuvchi shuncha
-        vaqt faqat aylanayotgan statusni ko'rardi. Endi u darhol
-        "12 slaydlik taqdimot tayyorlayapman, biroz vaqt oladi" degan
-        xabarni oladi, keyin status yana aylanadi, oxirida fayl keladi.
-
-        Bu qisqa xizmat matni: rasm, tugma va bo'laklarga bo'lish kerak
-        emas, shuning uchun to'liq pog'ona ham takrorlanmaydi.
-        """
-        try:
-            if can_send_rich and await _send_rich_message(
-                    message.chat.id, markdown=build_rich_markdown(text),
-                    message_thread_id=message_thread_id) is not None:
-                return
-            await _answer_plain(message, text)
-        except Exception as e:
-            # Oraliq xabar yetib bormasa ham asosiy javob buzilmasin.
-            logger.warning(f"[Oraliq] xabar yuborilmadi: {e}")
+    anim_task = asyncio.create_task(emoji_animator())
 
     async def push_update(current_text: str, final: bool = False):
         nonlocal fallback_message, using_rich_draft, last_push
@@ -915,39 +885,6 @@ async def process_stream_draft(message: Message, stream_generator, content_type:
             if finished:
                 break
             if not chunk:
-                continue
-
-            # [FLUSH_TEXT] — fayl vazifasi BOSHLANMOQDA. Shu paytgacha
-            # yig'ilgan matn ("...taqdimot tayyorlayapman, biroz kuting")
-            # darhol alohida xabar qilib yuboriladi, keyin status yana
-            # aylanadi. Fayl 1-2 daqiqa tayyorlanadi — foydalanuvchi
-            # shuncha vaqt bo'sh ekranga qaramasin.
-            if chunk.startswith("[FLUSH_TEXT]"):
-                preamble = full_text.replace("[NO_BUTTON]", "").strip()
-                full_text = ""
-                chunk_buffer = ""
-                if preamble:
-                    await send_interim(preamble)
-                    interim_texts.append(preamble)
-
-                    # ⚠️ YANGI DRAFT SHART. Chatga haqiqiy xabar
-                    # yuborilgach eski draft o'lik bo'lib qoladi: pinglar
-                    # rad etila boshlaydi, `using_rich_draft` o'chadi va
-                    # o'rniga "⏳ Javob tayyorlanmoqda..." degan ODDIY
-                    # xabar paydo bo'ladi. U yakuniy javob boshqa yo'l
-                    # bilan ketgani uchun chatda yarim matn va ✍️ bilan
-                    # osilib qolardi — animatsiya esa umuman ko'rinmasdi.
-                    _stop_events.pop(draft_id, None)
-                    draft_id = abs(hash((message.chat.id, message.message_id,
-                                         time.time_ns()))) % 2_147_483_647 or 1
-                    _stop_events[draft_id] = stop_requested
-                    using_rich_draft = message.chat.type == "private"
-
-                    # Animatsiya matn kelganda to'xtagan edi — qayta yoqamiz.
-                    if stop_animation.is_set():
-                        stop_animation.clear()
-                        anim_task = asyncio.create_task(
-                            emoji_animator(anim_started_at))
                 continue
 
             if chunk.startswith("[STATUS]"):
@@ -1097,9 +1034,7 @@ async def process_stream_draft(message: Message, stream_generator, content_type:
         except Exception:
             pass
 
-    # Oraliq xabarlar ham foydalanuvchiga YETIB BORGAN javob — ular tarixga
-    # ham, kvota tekshiruviga ham qo'shiladi.
-    return "\n\n".join([t for t in interim_texts + [clean_text] if t])
+    return clean_text
 
 
 # --------------------------------------------------
