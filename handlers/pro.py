@@ -108,6 +108,23 @@ _RICH_BTN_ATTRS = {
 }
 
 
+def _attr_value(raw) -> str:
+    """Atribut qiymatini HTML atributiga XAVFSIZ joylaydi.
+
+    ⚠️ QATOR AJRATUVCHI ALOHIDA: `html.escape()` uni tegmasdan qoldiradi,
+    Telegram parseri esa atribut ichidagi XOM `\\n` ni ko'rib tegni o'sha
+    yerda uzadi — natijada `<tg-button ...>` foydalanuvchiga xom matn
+    bo'lib chiqadi (jonli nosozlik: ko'p qatorli kod uchun "Nusxa olish"
+    tugmasi shunday buzilgan edi).
+    `&#10;` esa parser uchun oddiy belgi, nusxa olinganda haqiqiy qator
+    ajratuvchiga qaytadi — ya'ni kod ishlaydigan holda ko'chiriladi.
+    """
+    text = str(raw).replace("\r\n", "\n").replace("\r", "\n")
+    return (html_escape(text, quote=True)
+            .replace("\n", "&#10;")
+            .replace("\t", "&#9;"))
+
+
 def rich_button(label: str, *, type: str = "callback_data",
                 style: str | None = None, **value) -> str:
     """Bitta <tg-button>. `value` — turga mos yagona qiymat.
@@ -129,8 +146,11 @@ def rich_button(label: str, *, type: str = "callback_data",
     attr_name = _RICH_BTN_ATTRS.get(type)
     if attr_name:
         raw = value.get(attr_name) or value.get("value") or ""
-        attrs.append(f'{attr_name}="{html_escape(str(raw), quote=True)}"')
-    return f"<tg-button {' '.join(attrs)}>{html_escape(label)}</tg-button>"
+        attrs.append(f'{attr_name}="{_attr_value(raw)}"')
+    # Yorliqda ham qator ajratuvchi bo'lmasin — u tugmani ikki qatorga
+    # bo'lmaydi, shunchaki maketni buzadi.
+    return (f"<tg-button {' '.join(attrs)}>"
+            f"{html_escape(' '.join(str(label).split()))}</tg-button>")
 
 
 def rich_button_row(buttons: list[str], align: str = "center") -> str:

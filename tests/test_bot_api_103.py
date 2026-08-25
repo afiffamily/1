@@ -7,6 +7,7 @@ Tarmoqqa ham, bazaga ham murojaat qilmaydi — hamma tashqi chaqiruv
 o'rniga soxta (fake) funksiya qo'yiladi.
 """
 import asyncio
+import html
 import os
 import sys
 
@@ -71,6 +72,19 @@ check(5, "rich_button_row 8 tadan ortig'ini kesadi",
       row.count("<tg-button ") == 8 and 'align="right"' in row)
 
 check(6, "bo'sh qator bo'sh satr qaytaradi", pro_module.rich_button_row([]) == "")
+
+# 6a) KO'P QATORLI NUSXA MATNI — jonli nosozlik.
+# Xom `\n` atribut ichida tegni uzib qo'yardi va foydalanuvchi tugma
+# o'rniga `<tg-button type="copy_text" text="...">` degan XOM MATNNI
+# ko'rardi. Nusxa olingan matn esa haqiqiy qator ajratuvchi bilan
+# qaytishi shart — aks holda ko'chirilgan kod ishlamaydi.
+kod = 'a = int(input("son: "))\nb = 2\n\nprint(a + b)'
+mb = pro_module.rich_button("Nusxa", type="copy_text", text=kod)
+check("6a", "ko'p qatorli nusxa matni tegni buzmaydi",
+      "\n" not in mb and "&#10;" in mb)
+_val = mb.split('text="')[1].split('"')[0]
+check("6b", "nusxa olingan matn qator ajratuvchini saqlaydi",
+      html.unescape(_val) == kod)
 
 
 # ─────────────────────────────────────────────────────────────
