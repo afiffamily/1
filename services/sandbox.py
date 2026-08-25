@@ -99,9 +99,27 @@ def _apply_limits() -> None:
     """Bola-jarayonda exec'dan OLDIN chaqiriladi (faqat POSIX)."""
     # CPU: 55s yumshoq / 60s qattiq — timeout bilan bir xil tartibda.
     resource.setrlimit(resource.RLIMIT_CPU, (55, 60))
-    # Virtual xotira: 2 GB. pandas/numpy ko'p manzil maydonini band qiladi,
-    # shuning uchun bundan pastga tushirmaslik kerak.
-    resource.setrlimit(resource.RLIMIT_AS, (2048 * 1024 * 1024, 2048 * 1024 * 1024))
+    # ⚠️ XOTIRA: RLIMIT_AS ISHLATILMAYDI, RLIMIT_DATA ishlatiladi.
+    #
+    # `AS` — VIRTUAL manzil maydoni. numpy/pandas/matplotlib/pptx uni
+    # ishlatmasa ham gigabaytlab band qiladi (arena, thread stek,
+    # mmap zaxirasi). 2 GB chegara serverda `import pandas` ni ham
+    # MemoryError bilan yiqitardi — va har safar boshqa kutubxonani,
+    # ya'ni nosozlik "goh bor, goh yo'q" bo'lib ko'rinardi.
+    #
+    # Windowsda RLIMIT umuman qo'llanmaydi (`_HAS_RESOURCE` False),
+    # shuning uchun mahalliy sinovda hammasi ishlardi va nosozlik FAQAT
+    # Railway'da chiqardi: model `import deck` yiqilgach jimgina PDF ga
+    # o'tib ketardi, foydalanuvchi esa taqdimot so'rab PDF olardi.
+    #
+    # `DATA` esa HAQIQIY uyumni cheklaydi (Linux 4.7+ da anonim mmap ham
+    # kiradi), ya'ni himoya saqlanadi, bekorga band qilingan manzil
+    # maydoni esa hisoblanmaydi.
+    try:
+        resource.setrlimit(resource.RLIMIT_DATA,
+                           (1536 * 1024 * 1024, 1536 * 1024 * 1024))
+    except (ValueError, OSError):
+        pass
     # Yaratiladigan fayl hajmi: 100 MB.
     resource.setrlimit(resource.RLIMIT_FSIZE, (100 * 1024 * 1024, 100 * 1024 * 1024))
     # Fork bombasidan himoya.
