@@ -91,8 +91,14 @@ check("6b", "nusxa olingan matn qator ajratuvchini saqlaydi",
 # 7-9. "NUSXA OLISH" TUGMASI
 # ─────────────────────────────────────────────────────────────
 one_block = "Mana kod:\n```python\nprint(1)\n```\nTayyor."
-check(7, "bitta qisqa kod bloki → tugma",
-      "copy_text" in msg._copy_button_html(one_block))
+_one = msg._copy_button_html(one_block)
+check(7, "bitta qisqa kod bloki → tugma", "copy_text" in _one)
+
+# Tugma YOZUVSIZ, faqat ikonka. Bo'sh yorliq esa mumkin emas — Telegram
+# matnsiz tugmani qabul qilmaydi va BUTUN xabarni rad etadi.
+_yorliq = _one.split(">")[2].split("<")[0]
+check("7a", "nusxa tugmasi faqat ikonka (yozuvsiz, lekin bo'sh emas)",
+      _yorliq == "📋")
 
 two_blocks = one_block + "\n```js\nlet a=1\n```\n"
 check(8, "ikkita blok → tugma YO'Q", msg._copy_button_html(two_blocks) == "")

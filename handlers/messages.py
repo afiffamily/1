@@ -708,8 +708,12 @@ def _copy_button_html(text: str) -> str:
     snippet = blocks[0].strip()
     if not snippet or len(snippet) > _COPY_TEXT_LIMIT:
         return ""
+    # Faqat ikonka, yozuvsiz: tugma kod blokining yonida turadi va nima
+    # qilishi 📋 dan tushunarli. Yozuv qatorning yarmini egallab, javobni
+    # og'irlashtirardi. Butunlay bo'sh yorliq esa MUMKIN EMAS — Telegram
+    # tugma matni bo'sh bo'lsa xabarni rad etadi.
     return pro_module.rich_button_row([
-        pro_module.rich_button("📋 Nusxa olish", type="copy_text", text=snippet),
+        pro_module.rich_button("📋", type="copy_text", text=snippet),
     ], align="right")
 
 
