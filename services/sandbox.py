@@ -81,6 +81,17 @@ def _build_child_env(work_dir: Path) -> dict:
         "PYTHONIOENCODING": "utf-8",
         "PYTHONDONTWRITEBYTECODE": "1",
         "MPLBACKEND": "Agg",   # matplotlib ekransiz (headless) muhitda ishlashi uchun
+        # ⚠️ HISOB OQIMLARI SONI — 1 ta. Konteyner ichida `nproc` HOST
+        # yadrolarini ko'rsatadi (Railway'da o'nlab), OpenBLAS esa har bir
+        # oqim uchun katta bufer ajratadi va "Memory allocation still
+        # failed after 10 retries" bilan yiqiladi — `import pandas` ning
+        # o'zi ham o'tmaydi. Sandbox kodi bir martalik hisob, undan
+        # parallellikdan foyda yo'q. Bu o'zgaruvchilar PYTHON* emas,
+        # shuning uchun `-E` ularni bosmaydi.
+        "OPENBLAS_NUM_THREADS": "1",
+        "OMP_NUM_THREADS": "1",
+        "MKL_NUM_THREADS": "1",
+        "NUMEXPR_NUM_THREADS": "1",
         "MPLCONFIGDIR": str(cache_dir / "mpl"),
         "XDG_CACHE_HOME": str(cache_dir),
         "XDG_CONFIG_HOME": str(cache_dir),
