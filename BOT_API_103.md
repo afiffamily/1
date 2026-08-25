@@ -450,6 +450,46 @@ yetkazardi — foydalanuvchi bir xil javobni ikki marta ko'rardi
 
 Endi media bo'lgan xabarga `RICH_MEDIA_TIMEOUT = 60.0` beriladi.
 
+### Serverda kutubxonalar import bo'lmay qolgani
+
+Eng chalg'ituvchi nosozlik: mahalliy kompyuterda hammasi ishlardi,
+Railway'da esa `import pptx` yiqilardi. Model `import deck` yiqilgach
+jimgina PDF ga o'tib ketardi — foydalanuvchi **taqdimot so'rab PDF
+olardi** va buni hech narsa bildirmasdi.
+
+Ikkita mustaqil sabab, ikkalasi ham faqat Linuxda ko'rinadi
+(`_HAS_RESOURCE` Windowsda `False`, ya'ni RLIMIT umuman qo'llanmaydi):
+
+**1. `RLIMIT_AS` virtual manzil maydonini cheklaydi.** numpy, pandas,
+matplotlib va pptx ularni ishlatmasa ham gigabaytlab manzil band qiladi
+(arena, oqim steklari, mmap zaxirasi). 2 GB chegara `import pandas` ni
+ham `MemoryError` bilan yiqitardi. Har safar boshqa kutubxona
+yiqilgani uchun nosozlik "goh bor, goh yo'q" bo'lib ko'rinardi.
+
+Yechim: `RLIMIT_DATA` (1.5 GB) — u **haqiqiy uyumni** cheklaydi
+(Linux 4.7+ da anonim mmap ham kiradi). Himoya saqlanadi, bekorga band
+qilingan manzil maydoni hisoblanmaydi.
+
+**2. OpenBLAS oqimlari.** Birinchi sabab tuzatilgach `OpenBLAS error:
+Memory allocation still failed after 10 retries` chiqa boshladi.
+Konteyner ichida `nproc` **host** yadrolarini ko'rsatadi (Railway'da
+o'nlab), OpenBLAS esa har bir oqim uchun katta bufer ajratadi.
+
+Yechim: `OPENBLAS_NUM_THREADS=1` va sheriklari
+(`OMP_/MKL_/NUMEXPR_NUM_THREADS`). Bular `PYTHON*` emas, shuning uchun
+`-E` ularni bosmaydi. Sandbox kodi bir martalik hisob — parallellikdan
+foyda yo'q.
+
+**Nazorat:** `sandbox.check_libraries()` bot ishga tushganda 13 ta
+kutubxonani **bola jarayonda** (sandbox bilan bir xil sharoitda) sinab
+ko'radi va nosozlikni logga chiqaradi. Ota jarayonda `import pptx`
+qilib tekshirish yetarli emas — u boshqa muhitni ko'radi.
+
+Shu bilan birga fayl vazifasi xatosida endi traceback'ning **oxirgi**
+satri logga tushadi: xatoning turi va xabari o'sha yerda. Ilgari
+boshidan 200 belgi olinardi va logda `from pptx import Pre` degan
+foydasiz bo'lak qolib, asl sabab ko'rinmasdi.
+
 ### Sandbox Windowsda UTF-8 emas edi
 
 `-E` bayrog'i **barcha `PYTHON*` o'zgaruvchilarini** o'chiradi — shu
