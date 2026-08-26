@@ -19,7 +19,8 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from services.ai import build_rich_markdown
+from services.ai import (build_rich_markdown, strip_rich_tokens,
+                        strip_custom_emoji)
 
 
 def test_url_sanasi_tegilmaydi():
@@ -72,6 +73,128 @@ def test_kod_bloki_himoyada_qoldi():
     print("[6] kod bloki avvalgidek himoyalangan OK")
 
 
+def test_yangi_belgilar_tegilmaydi():
+    """10.3 konstruktsiyalarini Telegram O'ZI chizadi — biz tegmaymiz.
+
+    `==marked==`, `<sub>`/`<sup>`, `- [ ]` va `[^1]` uchun kodda
+    o'giruvchi YO'Q: ular `markdown` maydonida qanday yozilgan bo'lsa,
+    shundayligicha ketadi. Bu test o'giruvchi keyinchalik qo'shilganda
+    ularni buzib qo'ymasligini qo'riqlaydi.
+    """
+    matn = ("==Eng muhim jumla== va H<sub>2</sub>O, 25 m<sup>2</sup>.\n"
+            "- [ ] birinchi qadam\n- [x] bajarildi\n"
+            "Da'vo[^1].\n\n[^1]: Manba nomi")
+    out = build_rich_markdown(matn)
+    assert out == matn, f"belgilar o'zgardi:\n{out}"
+    print("[7] ==, <sub>/<sup>, - [ ] va [^1] tegilmadi OK")
+
+
+def test_kod_ichidagi_tenglik():
+    """`x == y` kod bloki ichida marker bo'lib qolmasligi kerak."""
+    kod = "```python\nif x == y == z:\n    pass\n```"
+    out = build_rich_markdown(kod)
+    assert out == kod, f"kod bloki o'zgardi:\n{out}"
+    print("[8] kod bloki ichidagi `==` saqlanib qoldi OK")
+
+
+def test_batafsil_belgisi():
+    """`[batafsil: ...]` → `<details>`; sarlavha escape qilinadi."""
+    out = build_rich_markdown(
+        "Javob.\n\n[batafsil: Texnik <xususiyat>]\n- a: 1\n[/batafsil]")
+    assert "<details><summary>Texnik &lt;xususiyat&gt;</summary>" in out, out
+    assert "</details>" in out and "- a: 1" in out, out
+    assert "[batafsil" not in out and "[/batafsil]" not in out, out
+    print("[9] [batafsil: ...] <details> ga o'girildi OK")
+
+
+def test_batafsil_ichma_ich_va_yarim():
+    """Ichma-ich belgi ham, juftsiz belgi ham xabarni buzmaydi."""
+    ichki = build_rich_markdown(
+        "[batafsil: Tashqi]\nmatn [batafsil: Ichki] ichkari [/batafsil]\n[/batafsil]")
+    assert ichki.count("<details>") == 1, ichki
+    assert "[batafsil" not in ichki, ichki
+
+    yarim = build_rich_markdown("Javob [batafsil: Yarim qolgan] davomi.")
+    assert "<details>" not in yarim and "[batafsil" not in yarim, yarim
+    assert "Javob" in yarim and "davomi." in yarim, yarim
+    print("[10] ichma-ich va yopilmagan belgi xabarni buzmadi OK")
+
+
+def test_batafsil_kod_ichida():
+    kod = '```python\ns = "[batafsil: x]"\n```'
+    assert build_rich_markdown(kod) == kod
+    print("[11] kod bloki ichidagi belgi tegilmadi OK")
+
+
+def test_batafsil_oddiy_matnda():
+    """Draft va zaxira yo'lida belgi qalin sarlavhaga aylanadi."""
+    out = strip_rich_tokens("Javob [batafsil: Jadval] ichi [/batafsil] oxiri")
+    assert "**Jadval**" in out and "[batafsil" not in out, out
+    assert "[/batafsil]" not in out and "ichi" in out, out
+    print("[12] oddiy yo'lda belgi qalin matnga aylandi OK")
+
+
+def test_iqtibos_belgisi():
+    """`[iqtibos: matn | muallif]` → `<aside>…<cite>…</cite></aside>`."""
+    out = build_rich_markdown("Matn.\n\n[iqtibos: Bilim kuch | Frensis Bekon]")
+    assert "<aside>Bilim kuch<cite>Frensis Bekon</cite></aside>" in out, out
+    assert "[iqtibos" not in out, out
+    print("[13] iqtibos belgisi <aside><cite> ga o'girildi OK")
+
+
+def test_iqtibos_muallifsiz():
+    """Muallif ixtiyoriy — `<cite>` umuman qo'yilmaydi, matn escape'lanadi."""
+    out = build_rich_markdown("[iqtibos: Muallifsiz <jumla>]")
+    assert "<aside>Muallifsiz &lt;jumla&gt;</aside>" in out, out
+    assert "<cite>" not in out, out
+    print("[14] muallifsiz iqtibos ham ishladi OK")
+
+
+def test_iqtibos_kod_va_oddiy_yol():
+    kod = '```\nx = "[iqtibos: kod ichida]"\n```'
+    assert build_rich_markdown(kod) == kod
+
+    oddiy = strip_rich_tokens("a [iqtibos: Bilim kuch | Bekon] b")
+    assert "«Bilim kuch» — Bekon" in oddiy and "[iqtibos" not in oddiy, oddiy
+    print("[15] kod ichida tegilmadi, oddiy yo'lda qo'shtirnoqqa aylandi OK")
+
+
+def test_premium_emoji_matnda():
+    """Ma'lum emoji `![ ](tg://emoji?id=...)` ga aylanadi — BO'SH JOY bilan."""
+    from core.config import CUSTOM_EMOJI
+    out = build_rich_markdown("Salom 🤖 fayl 📄 tayyor.")
+    assert f"![ ](tg://emoji?id={CUSTOM_EMOJI['bot']})" in out, out
+    assert f"![ ](tg://emoji?id={CUSTOM_EMOJI['file']})" in out, out
+    # ⚠️ Alt matnda bo'sh joy SHART: `![](` media blok deb o'qilishi mumkin.
+    assert "![](" not in out, out
+    print("[16] matndagi emoji premium variantga o'girildi (bo'sh alt) OK")
+
+
+def test_premium_emoji_tegilmaydigan_joylar():
+    """Kod, jadval katagi va `<aside>` — markdown parslanmaydi."""
+    kod = '```python\nx = "🤖"\n```'
+    assert build_rich_markdown(kod) == kod, "kod bloki tegildi"
+
+    jadval = build_rich_markdown("| a | 🤖 |\n|---|---|\n| 1 | 📄 |")
+    assert "tg://emoji" not in jadval and "🤖" in jadval, jadval
+
+    iqtibos = build_rich_markdown("[iqtibos: Men 🤖 man | Bot]")
+    assert "tg://emoji" not in iqtibos and "🤖" in iqtibos, iqtibos
+    print("[17] kod, jadval va iqtibos ichida emoji tegilmadi OK")
+
+
+def test_premium_emoji_chegarasi_va_qaytishi():
+    from core.config import TEXT_CUSTOM_EMOJI_MAX
+    ko_p = build_rich_markdown("🧠 " * (TEXT_CUSTOM_EMOJI_MAX + 8))
+    assert ko_p.count("tg://emoji") == TEXT_CUSTOM_EMOJI_MAX, ko_p.count("tg://emoji")
+    assert "🧠" in ko_p, "chegaradan keyingilari oddiy emoji bo'lib qolishi kerak"
+
+    # Premium obuna tugasa — emojisiz variant qayta yuboriladi.
+    asl = "Salom 🤖 fayl 📄."
+    assert strip_custom_emoji(build_rich_markdown(asl)) == asl
+    print("[18] chegara ishladi, emojisiz zaxira variant asl matnni tikladi OK")
+
+
 if __name__ == "__main__":
     test_url_sanasi_tegilmaydi()
     test_yalangoch_url_ham_himoyalangan()
@@ -79,4 +202,16 @@ if __name__ == "__main__":
     test_ikkalasi_bir_xabarda()
     test_url_dagi_dollar_belgisi()
     test_kod_bloki_himoyada_qoldi()
-    print("\nrich_markdown: barcha tekshiruvlar o'tdi (6/6).")
+    test_yangi_belgilar_tegilmaydi()
+    test_kod_ichidagi_tenglik()
+    test_batafsil_belgisi()
+    test_batafsil_ichma_ich_va_yarim()
+    test_batafsil_kod_ichida()
+    test_batafsil_oddiy_matnda()
+    test_iqtibos_belgisi()
+    test_iqtibos_muallifsiz()
+    test_iqtibos_kod_va_oddiy_yol()
+    test_premium_emoji_matnda()
+    test_premium_emoji_tegilmaydigan_joylar()
+    test_premium_emoji_chegarasi_va_qaytishi()
+    print("\nrich_markdown: barcha tekshiruvlar o'tdi (18/18).")

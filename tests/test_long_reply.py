@@ -104,7 +104,7 @@ class FakeBot:
 
 
 async def main():
-    LIMIT = m.MAX_MESSAGE_CHARS
+    LIMIT = m.MAX_PLAIN_CHARS
     real_bot, m.bot = m.bot, FakeBot()
     try:
         await _checks(LIMIT)
@@ -158,12 +158,15 @@ async def _checks(LIMIT):
         f"matnning bir qismi yo'qoldi: {sum(len(p) for p in delivered)} < 5000")
     print("[5] rich + Markdown rad etilganda ham javob to'liq yetib bordi OK")
 
-    # ── 6) Uzun javob bir nechta rich xabar bo'lib ketadi ───────────
+    # ── 6) Rich xabarga 9000 belgi BITTA bo'lib sig'adi ────────────
+    # Ilgari chegara 4000 edi va bu javob UCHTA xabarga bo'linardi. Har
+    # bo'linish — kod bloki va markdown havolasi uchun xavf, shuning
+    # uchun rich yo'lda 32768 chegarasi ishlatiladi.
     msg = FakeMessage()
     text, rich_calls = await run_stream(msg, ["B" * 9000], rich_ok=True)
-    assert len(rich_calls) == 3, f"9000 belgi 3 ta xabar bo'lishi kerak: {len(rich_calls)}"
-    assert all(len(c) <= LIMIT + 200 for c in rich_calls), [len(c) for c in rich_calls]
-    print("[6] uzun javob bir nechta rich xabarga bo'lindi OK")
+    assert len(rich_calls) == 1, f"9000 belgi bitta xabar bo'lishi kerak: {len(rich_calls)}"
+    assert all(len(c) <= m.MAX_RICH_CHARS + 200 for c in rich_calls), [len(c) for c in rich_calls]
+    print("[6] 9000 belgi bitta rich xabarga sig'di OK")
 
     # ── 7) Qisqa javob AVVALGIDEK bitta xabar bo'lib qoladi ────────
     msg = FakeMessage()
@@ -230,7 +233,72 @@ async def _checks(LIMIT):
         f"havola ikkiga bo'lingan: {[b[-60:] for b in bolaklar]}")
     print("[11] markdown havolasi bo'laklar orasida buzilmadi OK")
 
-    print("\nlong_reply: barcha tekshiruvlar o'tdi (11/11).")
+    # ═══════════════════════════════════════════════════════════════
+    # 11a) IZOH HAVOLASI VA TA'RIFI BIR XABARDA QOLADI
+    #
+    # `[^1]` matn ichida, `[^1]: ...` esa javob OXIRIDA turadi. Bo'linish
+    # ularni ajratsa, birinchi xabardagi havola HECH QAYERGA olib
+    # bormaydi. Kesish nuqtasi juftlikdan oldinga suriladi.
+    # ═══════════════════════════════════════════════════════════════
+    izohli = ("so'z " * ((LIMIT - 100) // 5)
+              + "Muhim da'vo[^1] va uning davomi. " + "yana " * 40
+              + "\n\n[^1]: Manba — Wikipedia")
+    bolaklar = m._split_for_telegram(izohli)
+    assert len(bolaklar) == 2, len(bolaklar)
+    tarifli = [b for b in bolaklar if "[^1]: Manba" in b]
+    assert len(tarifli) == 1, [b[-80:] for b in bolaklar]
+    assert "da'vo[^1]" in tarifli[0], (
+        f"havola ta'rifidan ajralib qoldi: {[b[-80:] for b in bolaklar]}")
+    print("[11a] izoh havolasi va ta'rifi bir xabarda qoldi OK")
+
+    # ── 12) Rich chegarasidan ham uzun javob bo'linadi ─────────────
+    msg = FakeMessage()
+    text, rich_calls = await run_stream(msg, ["B" * 40000], rich_ok=True)
+    assert len(rich_calls) == 2, f"40000 belgi 2 ta xabar: {len(rich_calls)}"
+    assert all(len(c) <= m.MAX_RICH_CHARS + 200 for c in rich_calls), [len(c) for c in rich_calls]
+    print("[12] rich chegarasidan uzun javob bo'lindi OK")
+
+    # ═══════════════════════════════════════════════════════════════
+    # 13) ENG XAVFLI HOLAT: rich rad etilganda BO'LAK QAYTA BO'LINADI
+    #
+    # Bo'lak rich o'lchamida (30000 gacha) kesilgan. Zaxira yo'li esa
+    # oddiy xabar — 4096. Qayta bo'lish unutilsa, rich rad etilgan uzun
+    # javob BUTUNLAY yo'qoladi. Bu 5-tekshiruvning uzun varianti.
+    # ═══════════════════════════════════════════════════════════════
+    msg = FakeMessage(reject_markdown=True)
+    text, _ = await run_stream(msg, ["A" * 30000], rich_ok=False)
+    delivered = msg.delivered()
+    assert delivered, "KRITIK: uzun javob zaxira yo'lida umuman yuborilmadi"
+    assert all(len(t) <= m.MAX_PLAIN_CHARS for t in delivered), (
+        f"oddiy xabar 4096 dan oshdi: {[len(t) for t in delivered]}")
+    assert sum(len(t) for t in delivered) >= 30000, (
+        f"matnning bir qismi yo'qoldi: {sum(len(t) for t in delivered)} < 30000")
+    print("[13] rich rad etilgan 30000 belgilik javob to'liq yetib bordi OK")
+
+    # ═══════════════════════════════════════════════════════════════
+    # 14) YANGI KONSTRUKTSIYALAR RAD ETILSA HAM JAVOB YETIB BORADI
+    #
+    # <details>, <aside>, <tg-map/> va premium emoji — hammasi Telegram
+    # QABUL QILADI degan taxminga tayanadi. Taxmin noto'g'ri chiqsa
+    # (teg shakli boshqa, obuna tugagan) Telegram BUTUN xabarni rad
+    # etadi. Oxirgi pog'ona shu sababdan XOM matndan quriladi: unda
+    # birorta ham teg yo'q, faqat belgilar oddiy matnga o'giriladi.
+    # ═══════════════════════════════════════════════════════════════
+    xom = ("Toshkent 🤖 haqida.\n\n"
+           "[batafsil: Texnik]\n- aholi: 3 mln\n[/batafsil]\n\n"
+           "[iqtibos: Shahar tinch | Kimdir]\n\n[xarita:41.3111,69.2797,14]")
+    msg = FakeMessage(reject_markdown=True)
+    await run_stream(msg, [xom], rich_ok=False)
+    yetkazilgan = " ".join(t for _, t, _ in msg.sent
+                           if "tayyorlanmoqda" not in t)
+    for teg in ("<details", "<aside", "<tg-map", "tg://emoji",
+                "[batafsil", "[/batafsil]", "[iqtibos", "[xarita"):
+        assert teg not in yetkazilgan, f"zaxira xabarda {teg} qoldi:\n{yetkazilgan}"
+    for soz in ("Toshkent", "aholi: 3 mln", "Shahar tinch"):
+        assert soz in yetkazilgan, f"matn yo'qoldi ({soz}):\n{yetkazilgan}"
+    print("[14] rich rad etilganda yangi konstruktsiyalar oddiy matnga tushdi OK")
+
+    print("\nlong_reply: barcha tekshiruvlar o'tdi (15/15).")
 
 
 if __name__ == "__main__":

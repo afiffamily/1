@@ -57,6 +57,171 @@ Jadval **birinchi** o'giriladi: (a) kod ichidagi `|` jadvalga o'xshaydi,
 `_EXPANDABLE_ATTR = "expandable"` — bir so'zli kalit, chunki API
 hujjatining o'zi ziddiyatli (tur jadvalida `collapsed` deb yozilgan).
 
+### Kod TEGMAYDIGAN to'rtta konstruktsiya
+
+`==marked==` (sariq marker), `<sub>`/`<sup>` (H<sub>2</sub>O,
+25 m<sup>2</sup>), `- [ ]` / `- [x]` (belgilanadigan ro'yxat) va
+`[^1]` + `[^1]: ...` (izoh) — bularni Telegram **o'zi** chizadi.
+`build_rich_markdown()` da ular uchun o'giruvchi YO'Q: model markdown
+yozadi, biz matnni shundayligicha o'tkazamiz. Ya'ni bu — deyarli
+butunlay **prompt** masalasi (`TELEGRAM FORMATTING` ro'yxati).
+
+Promptdagi qoidalar bittadan vazifa beradi: `==` — javobning ENG muhim
+bitta jumlasi (ikkitasi bo'lsa hech biri ajralib turmaydi);
+`<sub>`/`<sup>` — jumla ICHIDAGI formulalar, LaTeX `$...$` ning
+o'rniga emas, yonida; `- [ ]` — foydalanuvchi bajaradigan reja;
+`[^1]` — jumlani buzmasdan manba yoki chetki izoh berish.
+
+`tests/test_rich_markdown.py` 7-8 tekshiruvi bu konstruktsiyalar
+o'zgarmasdan o'tishini va kod bloki ichidagi `x == y` marker bo'lib
+qolmasligini qo'riqlaydi (kod `_protect_spans()` bilan himoyalangan).
+
+⚠️ **IZOH — BO'LINISHGA CHIDAMSIZ JUFTLIK.** `[^1]` matn ichida,
+`[^1]: ...` esa javob OXIRIDA turadi. `_split_for_telegram()` javobni
+bo'lganda havola birinchi xabarda, ta'rif ikkinchisida qolib, havola
+HECH QAYERGA olib bormasdi. Yechim markdown havolasi bilan bir xil:
+`_safe_cut()` kesish nuqtasini butun juftlikdan OLDINGA suradi (aynan
+havolaning o'zidan emas — undan oldingi bo'sh joydan, aks holda
+«da'vo[^1]» so'z o'rtasidan ajralardi). Shu sababdan `_safe_cut()` endi
+`rest[:limit]` emas, qolgan matnning HAMMASINI oladi: ta'rif chegaradan
+keyinroqda bo'lishi mumkin. `test_long_reply.py` 11a-tekshiruvi.
+
+### Yig'iladigan bo'lim — `[batafsil: Sarlavha] … [/batafsil]`
+
+Hujjatga ko'ra markdown faqat uchta blok ichida parslanadi: `<details>`,
+`<tg-collage>` va `<tg-slideshow>`. Ya'ni `<details>` ichiga oddiy
+markdown yozish mumkin.
+
+Ilgari yig'iladigan blok faqat manbalar uchun ishlatilardi
+(`_collapse_sources` → `<blockquote expandable>`). Uzun javobdagi
+ikkilamchi tafsilot — to'liq jadval, texnik xususiyatlar ro'yxati, uzun
+sitata — ekranni to'ldirardi, lekin hammaga kerak emas.
+
+**Nega belgi orqali, modelga to'g'ridan-to'g'ri `<details>` yozdirmasdan:**
+noto'g'ri yozilgan belgi shunchaki TASHLANADI, noto'g'ri yozilgan HTML
+esa butun xabarni rad ettiradi. `[rasm:N]` bilan bir xil tamoyil, va u
+ishlayotgani isbotlangan.
+
+`build_rich_markdown()` da o'girish **himoya ichida** turadi: kod bloki
+ichidagi `[batafsil: ...]` matni bo'lim ochib yubormasin. Naqsh ochko'z
+emas va ichkarida qolgan belgilar tashlanadi, ya'ni `<details>` ichiga
+`<details>` tushmaydi (hujjatdagi 16 daraja chegarasiga yaqinlashmaymiz
+ham).
+
+⚠️ Belgi RICH yo'lda `<details>` ga aylanadi, lekin draft (oqim
+paytidagi xom matn) va zaxira yo'li — oddiy xabar. U yerda foydalanuvchi
+`[batafsil: ...]` degan ichki belgini ko'rmasligi kerak, shuning uchun
+`strip_detail_tokens()` sarlavhani **qalin matnga** o'giradi (belgini
+o'chirib yuborsa sarlavha yo'qolardi). Bu `strip_image_tokens()` bilan
+yonma-yon, xuddi shu ikki joyda chaqiriladi.
+
+`open` atributi ATAYLAB qo'yilmagan: bo'lim yopiq holda chiqadi, aks
+holda hech narsa yig'ilmaydi va butun ma'no yo'qoladi.
+
+Tekshiruvlar: `tests/test_rich_markdown.py` 9-12.
+
+### Iqtibos — `[iqtibos: matn | muallif]`
+
+```html
+<aside>Iqtibos matni<cite>Muallif</cite></aside>
+```
+
+Matndan ajralib turadigan katta iqtibos. Tarixiy shaxs, kitob yoki nutq
+haqidagi javobda iqtibos ilgari oddiy `>` blok bo'lib ketardi va
+muallifdan ajralmasdi.
+
+Mexanizm yig'iladigan bo'lim bilan **bir xil** — bitta belgi, bitta
+o'giruvchi, ikkalasi ham `_protect_spans()` ichida. Muallif ixtiyoriy:
+`|` yozilmasa `<cite>` umuman qo'yilmaydi.
+
+⚠️ Markdown `<aside>` ichida **parslanmaydi** (hujjatga ko'ra faqat
+`<details>`, `<tg-collage>`, `<tg-slideshow>` ichida), shuning uchun matn
+ham, muallif ham `html_escape` qilinadi.
+
+Oddiy yo'lda (draft, zaxira xabar) `strip_rich_tokens()` uni
+`«matn» — muallif` shakliga o'giradi. Bu funksiya endi ikkala belgini
+ham qamraydi, shuning uchun nomi `strip_detail_tokens` dan
+`strip_rich_tokens` ga o'zgartirildi.
+
+Tekshiruvlar: `tests/test_rich_markdown.py` 13-15.
+
+### Javob matnidagi premium emoji
+
+```
+![ ](tg://emoji?id=5192883106046059669)
+```
+
+`CUSTOM_EMOJI` ID'lari ilgari faqat ikki joyda ishlatilardi: draft
+ichidagi `<tg-thinking>` va tugma ikonkasi (`icon_custom_emoji_id`).
+Javob MATNINING o'zida premium emoji hech qachon chiqmasdi.
+
+Endi `build_rich_markdown()` ning oxirgi bosqichi model yozgan matndagi
+ma'lum emojilarni (`TEXT_CUSTOM_EMOJI`: 🤖 📄 🧠 ⏰ 🧹 ✍️) animatsion
+variantiga almashtiradi.
+
+⚠️ **ALT MATNDA BO'SH JOY SHART** — `![ ](...)`, `![](...)` EMAS.
+Hujjatdagi misol aynan shunday va bu tasodif emas: bo'sh alt media blok
+sifatida o'qilishi mumkin.
+
+⚠️ Almashtirish faqat markdown PARSLANADIGAN joyda bo'ladi. Kod bloki
+`_protect_spans()` da, jadval katagi (`<td>`) va `<aside>` esa
+`_MD_DEAD_ZONE_RE` bilan chetlab o'tiladi — u yerlarda markdown
+parslanmaydi, ya'ni almashtirish ekranga `![ ](tg://...)` degan XOM
+matnni chiqarardi. Shu sababdan bu bosqich jadval va iqtibos
+o'girilgandan KEYIN turadi: u o'zidan oldingi natijani ko'rishi kerak.
+
+⚠️ `TEXT_CUSTOM_EMOJI_MAX = 12` — har bir almashtirish ~40 belgi
+qo'shadi va 32768 chegarasi hisobiga kiradi. Chegaradan keyingilari
+oddiy emoji bo'lib qoladi.
+
+⚠️ **PREMIUM SHARTI.** Matn ichidagi custom emoji bot egasida Telegram
+Premium bo'lishini talab qiladi. Obuna tugasa Telegram BUTUN xabarni rad
+etadi, ya'ni javob yo'qolardi. Shuning uchun zaxira variant
+(`plain_md`) endi `strip_custom_emoji()` dan ham o'tadi — rasm havolasi
+bilan bir xil pog'ona, javob bezakdan muhimroq. Yuborish shoxidagi
+`has_media` bayrog'i shu sababli `bezakli` ga aylandi: "rasm YOKI
+premium emoji bor" degani.
+
+Tekshiruvlar: `tests/test_rich_markdown.py` 16-18.
+
+### Xarita — `[xarita:41.3111,69.2797,13]`
+
+```html
+<tg-map lat="41.3111" long="69.2797" zoom="13"/>
+```
+
+«Samarqand qayerda», «bu restoran qayerda joylashgan», «Verdun jangi
+qayerda bo'lgan», sayohat rejasi — bularda xarita rasmdan ham foydaliroq,
+va bu Telegram'ga XOS imkoniyat: veb-chatbot xarita chiza olmaydi.
+
+**Koordinatani MODEL yozadi, geokodlash YO'Q.** Nominatim/Wikidata
+aniqroq bo'lardi, lekin u yana bitta tarmoq so'rovi, yana bitta rate
+limit, yana bitta buzilish nuqtasi. Mashhur joylarning koordinatasini
+model yaxshi biladi; xato yozsa xarita noto'g'ri joyni ko'rsatadi, lekin
+bu «rasm chiqmadi» darajasidagi nosozlik — javobni buzmaydi.
+
+⚠️ **NOTO'G'RI KOORDINATANI TEKSHIRIB BO'LMAYDI.** 41.9/12.5 — Rim,
+41.3/69.3 — Toshkent, ikkalasi ham "to'g'ri ko'rinadi". Kod faqat
+CHEGARANI tekshiradi (lat −90…90, long −180…180, zoom 1…20), aniqlik
+esa promptning zimmasida: faqat ANIQ bilgan joy uchun yozilsin, shubha
+bo'lsa umuman yozilmasin.
+
+⚠️ `<tg-map/>` — **yopiluvchi teg**. `<tg-map></tg-map>` deb yozilsa
+butun xabar rad etiladi. Shuning uchun tegni model emas, KOD yozadi —
+`[rasm:N]` bilan bir xil tamoyil: chegaradan chiqqan belgi jimgina
+tashlanadi.
+
+Zoom qiymati promptda misol bilan berilgan (3 — qit'a, 5 — mamlakat,
+10 — shahar, 14 — ko'cha, 17 — bitta bino): model buni o'zi bilmaydi.
+Zoom yozilmasa `_MAP_ZOOM_DEFAULT = 13` qo'yiladi — belgi shu sababdan
+tashlab yuborilmasin.
+
+Xarita — media blok, ya'ni 50 ta media chegarasiga kiradi (bizga uzoq)
+va jadval katagi / `<aside>` ichida chizilmaydi: `_outside_dead_zones()`
+u yerlarni chetlab o'tadi (premium emoji bilan bir xil yordamchi).
+
+Tekshiruvlar: `tests/test_map_marker.py` (8 ta).
+
 ### Chegaralar
 
 | Nima | Chegara |
@@ -66,6 +231,32 @@ hujjatining o'zi ziddiyatli (tur jadvalida `collapsed` deb yozilgan).
 | Media | 50 |
 | Jadval ustunlari | 20 |
 | Media havolasi | faqat HTTP/HTTPS (Telegram o'zi tortadi) |
+
+### Ikki xil uzunlik chegarasi
+
+`handlers/messages.py` da ikkita qiymat bor, chunki ikki xil xabar turi
+bor: `MAX_RICH_CHARS = 30000` (32768 dan zaxira bilan — markdown
+tayyorlashda `<tg-math>`, `<table>` kabi teglar uzunlikni oshiradi) va
+`MAX_PLAIN_CHARS = 4000` (oddiy `sendMessage` — 4096).
+
+Ilgari ikkalasi uchun ham 4000 ishlatilardi: 9000 belgilik javob UCHTA
+rich xabarga bo'linardi, bittada ketishi mumkin bo'lgani holda. Har
+bo'linish esa xavf — kod bloki yopilib qayta ochiladi, markdown havolasi
+kesilishi mumkin (`• [OLX` / `Uzbekistan](https://…)` nosozligi aynan
+shundan chiqqan). Bo'linish qancha kam bo'lsa, xavf shuncha kam.
+
+⚠️ **ZAXIRA YO'LIDA BO'LAK QAYTA BO'LINADI.** Rich xabar rad etilsa
+o'sha bo'lak oddiy xabar sifatida yuboriladi — 30000 belgilik bo'lakni
+esa Telegram qabul qilmaydi. Shuning uchun `_answer_plain()` ga
+berishdan oldin `_split_for_telegram(part, MAX_PLAIN_CHARS)` yana bir
+marta bo'ladi. Busiz tuzatishning o'zi javobni YO'QOTARDI, ya'ni
+oldingi holatdan yomonroq bo'lardi. `test_long_reply.py` 13-tekshiruvi
+aynan shuni qo'riqlaydi (5-tekshiruvning uzun varianti).
+
+Draft ham rich xabar, ya'ni unga ham 32768 tegishli; lekin draft
+yiqilganda ishlatiladigan oddiy kutish xabari — 4096. Shuning uchun
+`push_update()` matnni bir marta emas, HAR YO'L UCHUN alohida kesadi
+(`_fit()`).
 
 ---
 
@@ -77,26 +268,40 @@ xabar. `can_stop=True` bo'lsa unda to'xtatish tugmasi paydo bo'ladi.
 **Qayerda:** `handlers/messages.py:338` — `_send_rich_draft()`,
 `process_stream_draft()` ichidagi `emoji_animator()`.
 
-### aiogram bilmaydigan ikkita narsa
+### Oddiy observer (aiogram 3.31.0)
 
-**1. Yangi update turi.** Tugma bosilganda Telegram
-`stopped_message_generation` update yuboradi. aiogram 3.29 bu turni
-bilmaydi — `Update.event_type` unda **istisno otadi**. Shuning uchun u
-`main.py` dagi `dp.update.outer_middleware` da ushlanadi: middleware
-`event_type` aniqlanishidan OLDIN ishlaydi, xom maydon esa aiogram
-modellari `extra="allow"` bo'lgani uchun saqlanib qoladi.
-
-**2. `allowed_updates`.** aiogram bu ro'yxatni ro'yxatdan o'tgan
-ishlovchilardan chiqaradi. Bu tur uchun ishlovchi yo'q, ya'ni Telegram
-update'ni **umuman yubormasdi** — tugma jimgina ishlamasdi. Shuning
-uchun `start_polling` ga ro'yxat ANIQ beriladi:
+Tugma bosilganda Telegram `stopped_message_generation` update yuboradi.
+aiogram 3.31.0 dan boshlab bu tur qo'llab-quvvatlanadi va `Router` da
+alohida observer bor:
 
 ```python
-allowed = dp.resolve_used_update_types()
-if "stopped_message_generation" not in allowed:
-    allowed.append("stopped_message_generation")
-await dp.start_polling(bot, allowed_updates=allowed)
+@dp.stopped_message_generation()
+async def on_generation_stopped(event: MessageGenerationStopped):
+    if not messages_module.request_stop(event.draft_id):
+        logger.debug(...)
 ```
+
+Ro'yxatga olish tartibi muhim emas — bu `dp.message` zanjiriga umuman
+tegmaydi.
+
+**Bundan oldin ikkita chetlanish bor edi va ikkalasi ham endi kerak
+emas** (3.29 dan ko'chirganda o'chirilgan):
+
+1. `dp.update.outer_middleware()` — update'ni `event_type`
+   aniqlanishidan oldin ushlash, chunki 3.29 da `Update.event_type` bu
+   turda istisno otardi.
+2. `allowed_updates` ni qo'lda to'ldirish. aiogram bu ro'yxatni
+   ro'yxatdan o'tgan ishlovchilardan chiqaradi; handler yo'q ekan,
+   Telegram update'ni **umuman yubormasdi** va tugma jimgina ishlamasdi.
+   Handler bo'lgach `dp.resolve_used_update_types()` turni o'zi topadi —
+   `test_bot_api_103.py` 39-tekshiruvi shuni qo'riqlaydi.
+
+⚠️ 3.31 ga o'tishda bitta jonli nosozlik chiqdi: 10.3 maydonlari
+(`InlineKeyboardButton.disabled`, `InlineKeyboardMarkup.force_reply`)
+endi **haqiqiy maydon**, ilgari esa `model_extra` da yotardi.
+`_downgrade_kb()` ularni faqat `model_extra` dan o'qigani uchun zaxira
+klaviaturada tursiz tugma qolib ketardi — ya'ni butun xabar rad
+etilardi. Endi ikkala manba ham tekshiriladi.
 
 ### To'xtatish oqimni ham uzadi
 
@@ -229,6 +434,85 @@ internet_search(want_images=true)
    → embed_images()            yuborishdan oldin media blokiga almashtiradi
 ```
 
+### Kollaj, slideshow yoki yakka blok
+
+`[rasmlar]` belgisi rasm soniga qarab uch xil chiqadi
+(`embed_images()` → `gallery()`):
+
+| Rasm soni | Blok | Nega |
+|---|---|---|
+| 1 | yakka media blok | o'ralishning ma'nosi yo'q |
+| 2 … `SEARCH_IMAGE_COLLAGE_MAX` (4) | `<tg-collage>` | hammasi BIR EKRANDA, bir qarashda ko'rinadi |
+| 5 va undan ko'p | `<tg-slideshow>` | kollaj bunchasini juda mayda qilib yuboradi |
+
+⚠️ **KOLLAJDA SARLAVHA BITTA.** Har bir rasm ostiga alohida manba yozib
+bo'lmaydi, manba esa MAJBURIY — rasm o'zganiki. Shuning uchun kollaj
+ichidagi bloklar sarlavhasiz beriladi (`_image_block(caption=False)`) va
+manbalar bitta `<figcaption>` ga vergul bilan yig'iladi. Slideshow'da bu
+muammo yo'q: u rasmlarni bittalab ko'rsatadi, ya'ni har biri o'z
+sarlavhasi bilan qoladi.
+
+⚠️ `SEARCH_IMAGE_MAX = 4` ekan, amalda slideshow yo'liga TUSHILMAYDI —
+qidiruv 4 tadan ko'p rasm qaytarmaydi. Shox ataylab qoldirilgan: chegara
+ko'tarilsa o'zi ishlaydi.
+
+`SEARCH_IMAGE_SLIDESHOW_MIN` nomi `SEARCH_IMAGE_GALLERY_MIN` ga
+o'zgartirildi: u 2 dan boshlab endi kollajni yoqadi, ya'ni eski nom
+yolg'on bo'lib qolgan edi.
+
+Tekshiruvlar: `test_bot_api_103.py` 11, 11a, 11b.
+
+### Rasm veb qidiruvidan AJRATILDI (`images_only`)
+
+Rasm ilgari **faqat** `internet_search` chaqirilganda topilardi. Ya'ni
+model savolga o'z bilimidan javob bersa — qidiruvni umuman chaqirmasa —
+rasm chiqishi JISMONAN mumkin emas edi. «Eyfel minorasi haqida ayt»,
+«tulki qanday hayvon», «Amir Temur kim edi» — bularning birortasiga
+qidiruv bo'lmaydi, demak rasm ham bo'lmasdi. Rasm chiqqan holatlar
+(Chevrolet Malibu) faqat o'sha mavzuda qidiruv bo'lgani uchun chiqqan.
+
+Yechim: `internet_search` ga ixtiyoriy `images_only` bayrog'i.
+`true` bo'lsa `multi_source_deep_search()` **umuman chaqirilmaydi** —
+faqat `search_images()` ishlaydi va katalog qaytadi. Javobni model
+o'z bilimidan yozadi.
+
+- **Nega alohida tool emas:** yangi tool sxemasi HAR bir so'rovda modelga
+  yuboriladi, ya'ni hamma foydalanuvchi uchun doimiy token xarajati.
+  Mavjud toolga bitta boolean qo'shish deyarli tekin.
+- **Nega tez:** oddiy qidiruvda 3 ta so'rov + 3 ta sahifa yuklanadi
+  (~5-10s, ~5 ming token). `images_only` da faqat Commons API — bir
+  soniya, nol token.
+
+⚠️ `images_only` **`search_rounds` byudjetini yeydi**, aks holda model
+cheksiz rasm so'rab tura olardi.
+
+⚠️ `images_only` va `want_images` bitta ma'noni bildiradi, shuning uchun
+kod ikkalasini birlashtiradi. Model ikkinchisini yozishni unutsa tool
+jimgina bo'sh qaytardi — bu esa "rasm topilmadi" degan yolg'on signal.
+Shu sababdan rasm topilmagan holat ham ANIQ matn qaytaradi.
+
+⚠️ `_SYNTHESIS_SYSTEM` endi `search_ran` ga emas, `web_search_ran` ga
+bog'langan. U manbalar ro'yxatini va 3-5 xat boshini TALAB qiladi —
+`images_only` da esa manba yo'q, ya'ni "tulki qanday hayvon" javobi
+manbali qidiruv hisobotiga aylanib qolardi.
+
+### Tavsif «yo'q» tomonga og'gan edi
+
+`want_images` tavsifi ilgari «Shubhalansangiz false qiling» bilan
+tugardi, va *false* ro'yxatida «ta'rif, tarix» turardi — ya'ni rasm eng
+ko'p yordam beradigan mavzular. Model deyarli har doim shubhalanadi.
+
+Endi ro'yxatlar almashgan: *true* — ko'z bilan ko'riladigan har qanday
+narsa (mahsulot, jonzot, o'simlik, taom, joy, bino, shaxs, asar, asbob,
+tarixiy voqea); *false* — mavhum tushuncha, raqam va hisob, kod,
+matematika, maslahat, tarjima. Shubhalanish qoidasi teskari:
+**aniq ko'rinishi bo'lsa — true**. `IMAGE_CAPABILITY_NOTE` ham shuni
+takrorlaydi: qaror modelniki, foydalanuvchi so'rashi shart emas.
+
+Kutilgan ta'sir: rasmli javob ko'payadi, «mos rasm topilmadi» holati ham
+ko'payadi — bu normal, `_image_relevant()` aloqasiz rasmni baribir
+qo'ymaydi (aloqasiz surat bo'sh joydan yomonroq).
+
 ### Manba: Wikimedia Commons birinchi, ddgs zaxira
 
 Serverda DuckDuckGo rasm API'si **403** qaytaradi (data-markaz IP'si) va
@@ -269,6 +553,15 @@ indeksida `site:` ishlamaydi, raqamlar esa shovqin. Shuning uchun:
 «Hongqi H5 2025» -> «Hongqi H5» bo'lib qolardi: foydalanuvchi yangi
 modelni so'raganda ham har safar aynan o'sha eski surat kelardi.
 Endi to'rt xonali yil (1800-2099) qoladi, qolgan raqamlar tashlanadi.
+
+⚠️ `image_query` TAVSIFI ham shunga moslangan. Ilgari u taqiqlangan
+bezak so'zlari qatorida `'2024'` ni sanardi — ya'ni kod yilni ataylab
+saqlar, prompt esa modelga uni YOZMA deb aytardi. Model yozmagach
+saqlanadigan yil ham qolmasdi. Endi tavsif aniq ajratadi: yil MODELNI
+ajratsa yoziladi («Hongqi H5 2025», «iPhone 17»), umumiy mavzuda
+(«Samarqand Registan») yozilmaydi. `'classic'`, `'chiroyli'`,
+`'narxi'` taqiq ro'yxatida qoladi — ular haqiqatan Commons qidiruvini
+buzadi.
 
 ### Takroriy rasm so'rovi (jonli nosozlik)
 
@@ -536,7 +829,8 @@ Endi raund `RATE_LIMIT_RETRY_DELAY` (6s) kutib **bir marta** qayta
 uriniladi. Shart: hali birorta matn bo'lagi chiqmagan bo'lsin — aks
 holda foydalanuvchi javob boshini ikki marta ko'rardi.
 
-Tekshiruvlar: `tests/test_search_images_loop.py` (6 ta).
+Tekshiruvlar: `tests/test_search_images_loop.py` (10 ta — takror,
+TPM, `images_only`).
 
 ### Rad etilgan ≠ javob kelmagan
 
@@ -678,12 +972,13 @@ Yangi:
 
 | Fayl | Nimani qo'riqlaydi |
 |---|---|
-| `test_bot_api_103.py` | 40 tekshiruv: tugmalar, nusxa matni, rasm belgilari, jadval, manbalar, to'xtatish, outcome |
+| `test_bot_api_103.py` | 48 tekshiruv: tugmalar, nusxa matni, rasm belgilari, jadval, manbalar, to'xtatish, outcome |
 | `test_deck_layout.py` | Hech bir kontent shakli kesishmasligi, rasm nisbati, altbet bandi |
 | `test_file_images.py` | Hujjat rasmlari: pozitsion nomlash, kesh, JPEG ga o'girish |
 
 Kengaytirilgan: `test_file_task_loop.py` (10/10 — sifat tekshiruvi va
-fayl dublikati), `test_long_reply.py` (10/10 — osilib qolgan xabar),
+fayl dublikati), `test_long_reply.py` (14/14 — osilib qolgan xabar, ikki xil uzunlik
+chegarasi, izoh juftligi),
 `test_tool_status.py` (9/9 — fayl vazifasida faqat status),
 `test_file_followup.py` (8/8 — uzun so'rovga eski fayl biriktirilmaydi).
 

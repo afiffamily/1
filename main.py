@@ -2,7 +2,7 @@ import asyncio
 from aiogram import types, F, Router
 from aiogram.filters import CommandStart
 from aiogram.methods import DeleteWebhook
-from aiogram.types import BotCommandScopeAllPrivateChats
+from aiogram.types import BotCommandScopeAllPrivateChats, MessageGenerationStopped
 from core.loader import dp, bot, logger
 from db.database import create_db_pool, create_users_table, create_history_table
 from db import database
@@ -72,28 +72,16 @@ async def main():
     # Foydalanuvchi streaming draft ustidagi tugmani bosganda Telegram
     # `stopped_message_generation` update'ini yuboradi.
     #
-    # ⚠️ NEGA MIDDLEWARE, oddiy handler emas: o'rnatilgan aiogram (3.29)
-    # bu update turini hali bilmaydi va `Update.event_type` unda
-    # UpdateTypeLookupError beradi. Outer middleware esa event_type
-    # aniqlanishidan OLDIN ishlaydi, xom maydon (`model_extra`) ham
-    # o'z joyida turadi — chunki aiogram modellari extra="allow".
-    # aiogram yangilanganda bu blokni oddiy handlerga ko'chirsa bo'ladi.
-    @dp.update.outer_middleware()
-    async def stopped_generation_gate(handler, event, data):
-        stopped = (getattr(event, "model_extra", None) or {}).get(
-            "stopped_message_generation")
-        if stopped:
-            try:
-                draft_id = int(stopped.get("draft_id", 0))
-            except (TypeError, ValueError):
-                draft_id = 0
-            if not messages_module.request_stop(draft_id):
-                logger.debug(f"[Stop] noma'lum draft_id={draft_id} — "
-                             "javob allaqachon tugagan bo'lishi mumkin")
-            # Dispatcher'ga O'TKAZILMAYDI: bu update'ni ushlaydigan
-            # handler yo'q va u har safar xatoga aylanardi.
-            return None
-        return await handler(event, data)
+    # aiogram 3.31.0 bu update turini biladi, ya'ni oddiy observer
+    # yetarli. Ro'yxatga olish TARTIBI bu yerda muhim emas — bu alohida
+    # observer, `dp.message` zanjiriga umuman tegmaydi. Bundan tashqari
+    # handler borligi `resolve_used_update_types()` ga update turini
+    # o'zi topish imkonini beradi (pastdagi start_polling'ga qarang).
+    @dp.stopped_message_generation()
+    async def on_generation_stopped(event: MessageGenerationStopped):
+        if not messages_module.request_stop(event.draft_id):
+            logger.debug(f"[Stop] noma'lum draft_id={event.draft_id} — "
+                         "javob allaqachon tugagan bo'lishi mumkin")
 
     admin_module.register_admin_handlers(dp, bot)
 
@@ -228,15 +216,10 @@ async def main():
 
     await bot(DeleteWebhook(drop_pending_updates=True))
 
-    # ⚠️ allowed_updates'ni QO'LDA berish SHART. aiogram uni ro'yxatdan
-    # o'tgan handlerlardan chiqaradi (resolve_used_update_types), ya'ni
-    # `stopped_message_generation` uchun handler yo'q — u ro'yxatga
-    # tushmaydi va Telegram bu update'ni HECH QACHON yubormaydi.
-    # Ya'ni to'xtatish tugmasi jimgina ishlamay qo'yardi.
-    allowed = dp.resolve_used_update_types()
-    if "stopped_message_generation" not in allowed:
-        allowed.append("stopped_message_generation")
-    await dp.start_polling(bot, allowed_updates=allowed)
+    # allowed_updates ro'yxatdan o'tgan handlerlardan chiqariladi.
+    # `stopped_message_generation` uchun endi haqiqiy observer bor, ya'ni
+    # u ro'yxatga o'zi tushadi — qo'lda qo'shish kerak emas.
+    await dp.start_polling(bot, allowed_updates=dp.resolve_used_update_types())
 
 
 if __name__ == "__main__":

@@ -14,7 +14,7 @@
 #   https://pypi.org/pypi/<paket>/<versiya>/json -> urls[].filename
 
 # ── Bot va API ──────────────────────────────────────────────────────
-aiogram==3.29.0            # Guest Mode (guest_message) uchun >= 3.29 shart
+aiogram==3.31.0            # Bot API 10.3 (stopped_message_generation observer) uchun >= 3.31
 openai==2.44.0
 pydantic==2.11.10
 python-dotenv==1.0.1

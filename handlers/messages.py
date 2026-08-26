@@ -42,7 +42,8 @@ from services.ai import (
     speech_to_text_smart, text_to_speech_smart,
     get_vision_reply, extract_text_from_document,
     clear_chat_history, safe_get_chat_history,
-    build_rich_markdown, embed_images, strip_image_tokens,
+    build_rich_markdown, embed_images, strip_image_tokens, strip_rich_tokens,
+    strip_custom_emoji,
 )
 
 router = Router()
@@ -231,10 +232,19 @@ def _balance_markdown_fences(text: str) -> str:
     return text
 
 
-# Telegram bitta xabarga 4096 belgi ruxsat beradi. 4000 — zaxira bilan:
-# build_rich_markdown() matnga <tg-math>/<tg-time> kabi teglar qo'shib,
-# uzunlikni biroz oshiradi.
-MAX_MESSAGE_CHARS = 4000
+# ⚠️ IKKI XIL CHEGARA, chunki ikki xil xabar turi:
+#
+#   oddiy xabar (sendMessage)  — 4096 belgi
+#   boy xabar  (rich message)  — 32768 belgi (Bot API 10.3)
+#
+# Ikkalasida ham zaxira qoldiriladi: build_rich_markdown() matnga
+# <tg-math>/<tg-time>/<table> kabi teglar qo'shib uzunlikni oshiradi.
+#
+# NEGA MUHIM: har bir bo'linish — xavf (kod bloki yopilib qayta ochiladi,
+# markdown havolasi kesilishi mumkin). Rich yo'lda 9000 belgilik javob
+# ilgari UCHTA xabarga bo'linardi, endi bittada ketadi.
+MAX_RICH_CHARS = 30000
+MAX_PLAIN_CHARS = 4000
 
 # Rasm havolasi bor rich xabar uchun alohida chegara. Umumiy sessiya
 # chegarasi 10s — u yengil, tez-tez yuboriladigan draftlar uchun to'g'ri,
@@ -245,25 +255,58 @@ RICH_MEDIA_TIMEOUT = 60.0
 
 
 _MD_LINK_RE = re.compile(r"\[[^\]\n]*\]\([^)\s]*\)?")
+# Izoh (footnote): `[^1]` — havola, `[^1]: ...` — ta'rif. Ta'rif qator
+# boshida turadi, shuning uchun havola naqshi `:` ni istisno qiladi.
+_FOOTNOTE_REF_RE = re.compile(r"\[\^([^\]\s]+)\](?!:)")
+_FOOTNOTE_DEF_RE = re.compile(r"^\[\^([^\]\s]+)\]:", re.M)
 
 
-def _safe_cut(window: str, cut: int) -> int:
-    """Kesish nuqtasini markdown havolasining O'RTASIDAN chiqaradi.
+def _safe_cut(text: str, cut: int, limit: int) -> int:
+    """Kesish nuqtasini JUFT konstruktsiyaning o'rtasidan chiqaradi.
 
     Jonli nosozlik: manbalar ro'yxati aynan `[OLX Uzbekistan](https://...)`
     ning ichida bo'lingan va foydalanuvchi bitta xabarda `• [OLX`, keyingi
     xabarda `Uzbekistan](https://...)` degan buzuq matnni ko'rgan.
     Havola ikkiga bo'linsa, ikkala bo'lakda ham u havola bo'lmay qoladi.
+
+    Izoh ham xuddi shunday juftlik, faqat yarmlari bir-biridan uzoqda:
+    `[^1]` matn ichida turadi, `[^1]: ...` ta'rifi esa javob OXIRIDA.
+    Bo'linish ularni ikki xabarga ajratsa, havola HECH QAYERGA olib
+    bormaydi — shuning uchun kesish nuqtasi butun juftlikdan OLDINGA
+    suriladi.
+
+    ⚠️ `text` — qolgan matnning HAMMASI, `rest[:limit]` emas: ta'rif
+    chegaradan keyinroqda bo'lishi mumkin va aks holda ko'rinmasdi.
     """
-    for m in _MD_LINK_RE.finditer(window):
+    for m in _MD_LINK_RE.finditer(text):
+        if m.start() > cut:
+            break
         if m.start() < cut < m.end():
             # Havoladan OLDIN kesamiz; joy qolmasa — o'zgartirmaymiz
             # (uzun havola bitta bo'lakka sig'masligi mumkin).
-            return m.start() if m.start() > len(window) // 4 else cut
+            return m.start() if m.start() > limit // 4 else cut
+
+    defs = {m.group(1): m.start() for m in _FOOTNOTE_DEF_RE.finditer(text)}
+    if defs:
+        for m in _FOOTNOTE_REF_RE.finditer(text):
+            if m.start() >= cut:
+                break
+            # Ta'rif kesimdan keyinda — havolani ham keyingi bo'lakka
+            # o'tkazamiz. Joy qolmasa (juftlik bo'lak boshidayoq
+            # boshlansa) tegilmaydi, aks holda bo'lak har safar
+            # kichrayib, bo'lish cheksiz siklga aylanardi.
+            d = defs.get(m.group(1))
+            if d is not None and d >= cut:
+                # Havolaning O'ZIDAN emas, undan oldingi bo'sh joydan
+                # kesamiz — aks holda «da'vo[^1]» so'zning o'rtasidan
+                # ajralib, birinchi xabar «Muhim da'vo» bilan tugardi.
+                start = text.rfind(" ", 0, m.start()) + 1
+                if start > limit // 4:
+                    return start
     return cut
 
 
-def _split_for_telegram(text: str, limit: int = MAX_MESSAGE_CHARS) -> list[str]:
+def _split_for_telegram(text: str, limit: int = MAX_PLAIN_CHARS) -> list[str]:
     """Uzun javobni Telegram chegarasiga sig'adigan bo'laklarga bo'ladi.
 
     ⚠️ NEGA KERAK: MAX_OUTPUT_TOKENS = 16000, ya'ni javob bemalol 15-20 ming
@@ -284,7 +327,7 @@ def _split_for_telegram(text: str, limit: int = MAX_MESSAGE_CHARS) -> list[str]:
         cut = max(window.rfind("\n\n"), window.rfind("\n"), window.rfind(" "))
         if cut < limit // 2:          # mos chegara yo'q — qattiq kesamiz
             cut = limit
-        cut = _safe_cut(window, cut)
+        cut = _safe_cut(rest, cut, limit)
         parts.append(rest[:cut].rstrip())
         rest = rest[cut:].lstrip()
     if rest:
@@ -862,26 +905,35 @@ async def process_stream_draft(message: Message, stream_generator, content_type:
         # Oraliq ko'rinish ham Telegram chegarasiga sig'ishi kerak: uzun
         # javobda har bir push rad etilib, oqim "muzlab" qolardi. Yakuniy
         # matn baribir to'liq, bo'laklarga bo'linib yuboriladi (pastda).
-        # ⚠️ [rasm:N] — bu MODEL uchun ichki belgi, foydalanuvchi uni
-        # ko'rmasligi kerak. Yakuniy xabarda u media blokiga aylanadi,
-        # lekin oqim paytida xom holda ekranda turib qolardi.
-        display_text = strip_image_tokens(current_text)
+        # ⚠️ [rasm:N], [batafsil: ...], [iqtibos: ...] — MODEL uchun ichki
+        # belgilar, foydalanuvchi ularni ko'rmasligi kerak. Yakuniy
+        # xabarda ular media blok / <details> / <aside> ga aylanadi,
+        # oqim paytida esa xom holda ekranda turib qolardi.
+        display_text = strip_rich_tokens(strip_image_tokens(current_text))
         if not final:
             display_text += " ✍️"
-        if len(display_text) > MAX_MESSAGE_CHARS:
-            display_text = display_text[:MAX_MESSAGE_CHARS - 1] + "…"
-        safe_markdown = _balance_markdown_fences(display_text)
+
+        # ⚠️ Draft — RICH xabar, ya'ni unga 32768 chegarasi tegishli.
+        # Zaxira yo'li (oddiy xabarni tahrirlash) esa 4096 da qoladi,
+        # shuning uchun kesish bir marta emas, HAR YO'L UCHUN alohida.
+        def _fit(limit: int) -> str:
+            t = display_text
+            if len(t) > limit:
+                t = t[:limit - 1] + "…"
+            return _balance_markdown_fences(t)
 
         if using_rich_draft:
             result = await _send_rich_draft(
                 message.chat.id, draft_id,
-                markdown=safe_markdown,
+                markdown=_fit(MAX_RICH_CHARS),
                 message_thread_id=message_thread_id,
                 can_stop=True,
             )
             if result is not None:
                 return
             using_rich_draft = False
+
+        safe_markdown = _fit(MAX_PLAIN_CHARS)
 
         if fallback_message is None:
             try:
@@ -975,7 +1027,11 @@ async def process_stream_draft(message: Message, stream_generator, content_type:
 
     clean_text = full_text.replace("[NO_BUTTON]", "").strip()
     if clean_text:
-        parts = _split_for_telegram(clean_text)
+        # Rich xabarga 32768 belgi sig'adi, oddiysiga 4096. Bo'lish
+        # qaysi yo'l bilan ketishiga qarab tanlanadi — guruhda ham rich
+        # ishlaydi (draft esa yo'q), shuning uchun mezon can_send_rich.
+        parts = _split_for_telegram(
+            clean_text, MAX_RICH_CHARS if can_send_rich else MAX_PLAIN_CHARS)
         # "Nusxa olish" tugmasi FAQAT javob bitta bo'lakka sig'ganda.
         # Sabab: _split_for_telegram() bo'lak o'rtasida qolgan kod blokini
         # yopib, keyingisida qayta ochadi — ya'ni bo'lingan javobda tugma
@@ -993,14 +1049,22 @@ async def process_stream_draft(message: Message, stream_generator, content_type:
         # Javob "yo'qolib qolishi" uchun to'rttasi ham yiqilishi kerak.
         for idx, part in enumerate(parts):
             base_md = build_rich_markdown(part)
-            plain_md = strip_image_tokens(base_md)
+            # ⚠️ ZAXIRA VARIANTIDA PREMIUM EMOJI HAM YO'Q. Matn ichidagi
+            # custom emoji bot egasida Telegram Premium bo'lishini talab
+            # qiladi; obuna tugasa Telegram BUTUN xabarni rad etadi.
+            # Rasm havolasi bilan bir xil tamoyil — javob bezakdan
+            # muhimroq.
+            plain_md = strip_custom_emoji(strip_image_tokens(base_md))
             rich_md = embed_images(base_md, images or [])
             if buttons_html:
                 rich_md += "\n\n" + buttons_html
 
             if can_send_rich:
                 outcome: list = []
-                has_media = rich_md != plain_md
+                # Bezak = rasm bloki YOKI premium emoji. Ikkalasi ham
+                # xabarni rad ettirishi mumkin va ikkalasisiz variant
+                # bitta — plain_md.
+                bezakli = rich_md != plain_md
                 sent = await _send_rich_message(
                     message.chat.id,
                     markdown=rich_md,
@@ -1009,7 +1073,7 @@ async def process_stream_draft(message: Message, stream_generator, content_type:
                     # ⚠️ Rasm bo'lsa Telegram xabarni yaratishdan OLDIN har
                     # bir havolani manba saytdan O'ZI yuklab oladi — bu
                     # umumiy 10s chegarasidan oson oshadi.
-                    timeout=RICH_MEDIA_TIMEOUT if has_media else None,
+                    timeout=RICH_MEDIA_TIMEOUT if bezakli else None,
                 )
                 if sent is not None:
                     continue
@@ -1027,9 +1091,9 @@ async def process_stream_draft(message: Message, stream_generator, content_type:
 
                 # Aniq rad etildi: sababi deyarli har doim media havolasi
                 # yoki tugma. Ikkalasisiz qayta urinamiz.
-                if has_media:
+                if bezakli:
                     logger.info("[Rich] bezakli xabar rad etildi — "
-                                "rasm/tugmasiz qayta urinilmoqda")
+                                "rasm/emoji/tugmasiz qayta urinilmoqda")
                     plain_outcome: list = []
                     sent = await _send_rich_message(
                         message.chat.id,
@@ -1040,13 +1104,21 @@ async def process_stream_draft(message: Message, stream_generator, content_type:
                     if sent is not None or OUTCOME_UNKNOWN in plain_outcome:
                         continue
 
-            fallback_text = strip_image_tokens(part)
-            if idx == 0 and fallback_message is not None:
-                if await _edit_message_fallback(fallback_message, fallback_text) is not None:
-                    fallback_used = True
-                    continue
+            # ⚠️ ZAXIRA YO'LI — ODDIY XABAR, ya'ni 4096 chegarasi. Bo'lak
+            # esa rich o'lchamida (30000 gacha) kesilgan: uni QAYTA
+            # bo'lmasdan yuborish Telegram tomonidan rad etiladi va javob
+            # BUTUNLAY yo'qoladi — rich yo'l allaqachon yiqilgan holat.
+            for kichik in _split_for_telegram(
+                    strip_rich_tokens(strip_image_tokens(part)),
+                    MAX_PLAIN_CHARS):
+                if (idx == 0 and fallback_message is not None
+                        and not fallback_used):
+                    if await _edit_message_fallback(
+                            fallback_message, kichik) is not None:
+                        fallback_used = True
+                        continue
 
-            await _answer_plain(message, fallback_text)
+                await _answer_plain(message, kichik)
 
     # "⏳ Javob tayyorlanmoqda..." xabari — bu faqat draft yiqilgandagi
     # ZAXIRA ko'rsatkich. Yakuniy javob boshqa yo'l bilan yetkazilgan

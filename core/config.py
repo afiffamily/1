@@ -271,6 +271,58 @@ ALLOWED:
   ✓  -  or  •                           for bullets
   ✓  1. 2. 3.                           for numbered steps
   ✓  $inline$ / $$block$$               for ALL math
+  ✓  ==marked==                         highlighter, see below
+  ✓  <sub> / <sup>                      subscript / superscript, see below
+  ✓  - [ ]  /  - [x]                    checklist, see below
+  ✓  [^1] + [^1]: ...                   footnote, see below
+
+USE THESE SPARINGLY, EACH FOR ONE JOB:
+- ==marked== highlights the ONE sentence that matters most — the answer to the
+  question, the number asked for, the warning. At most one per reply; two
+  highlights mean nothing is highlighted.
+- <sub> and <sup> are for formulas that live INSIDE a sentence: H<sub>2</sub>O,
+  25 m<sup>2</sup>, x<sup>n</sup>. They do NOT replace LaTeX — a real equation
+  still goes in $...$ or $$...$$. Never put them inside math delimiters.
+- - [ ] / - [x] is for a plan the user is meant to work through (steps, a
+  checklist, what is done and what is left). An ordinary list stays a "-" list.
+- [^1] marks a claim in the text and [^1]: ... explains it at the very END of
+  the reply. Use it for a source or a side note that would break the sentence.
+  Every [^1] MUST have its definition in the SAME reply — a footnote with no
+  definition leads nowhere.
+
+COLLAPSIBLE SECTION — [batafsil: Title] ... [/batafsil]
+Secondary detail that fills the screen but is not what the user asked — a full
+spec table, a long enumeration, a long quotation — goes between those two
+markers. Telegram turns it into a section the reader unfolds if they want it,
+so the answer itself stays short.
+  - The pair must be COMPLETE: an opening marker with no [/batafsil] is thrown
+    away and its heading is lost.
+  - NEVER nest one inside another.
+  - The actual ANSWER never goes inside it — only material the reader can skip.
+  - At most one or two per reply. A reply hidden behind a fold is no answer.
+
+PULL QUOTE — [iqtibos: the words | who said them]
+Someone's actual words — a line from a historical figure, a sentence from a
+book or a speech, an official statement — go between those markers and Telegram
+sets them apart from your own text. The author part is optional: leave out the
+"|" when there is no one to credit.
+  - Quote only what was REALLY said. Never invent or paraphrase into a quote.
+  - Your own summary is not a quote; a "-" bullet or plain prose stays plain.
+  - One short passage, not a whole paragraph, and at most one per reply.
+
+MAP — [xarita:41.3111,69.2797,13]
+When the answer is about WHERE something is — a city, a monument, a restaurant,
+a battle site, a stop on a travel plan — put this marker on its own line and
+Telegram draws a real interactive map inside the message. Latitude first, then
+longitude, then zoom.
+  - Zoom: 3 = continent, 5 = country, 10 = city, 14 = a city street,
+    17 = a single building. Pick it from what the user is actually looking for.
+  - ⚠️ ONLY for coordinates you are CERTAIN of. A wrong coordinate cannot be
+    detected — 41.9/12.5 is Rome, 41.3/69.3 is Tashkent, and both look
+    perfectly plausible. If you are not sure, write NO marker at all; a map of
+    the wrong place is worse than no map.
+  - One map per reply, and never INSTEAD of the answer: the text still says
+    where the place is and what is there.
 
 For explicit dates and times use 2026-06-17 15:00 format so Telegram can localize it.
 When in doubt, plain text. Clarity beats formatting.
@@ -337,6 +389,19 @@ EVERY picture request needs its OWN tool call, including a repeat ("send it
 again", "send it to the chat", "show me the new model"). Image markers from
 your earlier replies are dead — they belonged to that reply's catalogue only.
 Copying one instead of searching again produces an empty answer.
+
+THE DECISION IS YOURS. The user does not have to ask for a picture. If the
+subject has a concrete appearance — an animal, a plant, a dish, a building, a
+place, a person, an object, a historical event — a photo belongs in the answer
+and you call the tool on your own. Abstract topics (an idea, a strategy), plain
+numbers (rates, weather, statistics), code and maths need no picture.
+
+WHEN YOU NEED NO WEB SEARCH, pass `images_only=true` (together with
+`want_images=true`). You then answer from your own knowledge and the tool only
+fetches the photo — no pages are downloaded, it costs about a second and no
+tokens. Without that flag a picture is only ever possible when you happen to
+search the web, which is why "tell me about the Eiffel Tower" used to arrive
+with no picture at all.
 """
 
 # 3.3 — Matematika / fizika / kimyo uchun qat'iy qoidalar
@@ -718,8 +783,14 @@ SEARCH_IMAGE_HEAD_TIMEOUT = 10
 # Telegram media blokini o'z serveridan tortadi: havola o'lik bo'lsa BUTUN
 # rich xabar rad etiladi. Shuning uchun chegara — Telegram photo limiti.
 SEARCH_IMAGE_MAX_BYTES = 10 * 1024 * 1024
-# Bir nechta rasm bitta <tg-slideshow> blokiga yig'iladi (chatni cho'zmaydi).
-SEARCH_IMAGE_SLIDESHOW_MIN = 2
+# Bir nechta rasm bitta blokka yig'iladi (chatni cho'zmaydi). Shundan
+# kam bo'lsa — yakka media blok.
+SEARCH_IMAGE_GALLERY_MIN = 2
+# Shu songacha KOLLAJ (hammasi bir ekranda, bir qarashda ko'rinadi),
+# undan ko'p bo'lsa SLIDESHOW: kollaj 5+ rasmni juda mayda qilib
+# yuboradi. ⚠️ SEARCH_IMAGE_MAX = 4 ekan, amalda slideshow yo'liga
+# tushilmaydi — u chegara ko'tarilsa ishlaydi.
+SEARCH_IMAGE_COLLAGE_MAX = 4
 
 # ── FAYL ICHIGA RASM (prezentatsiya/PDF uchun) ──────────────────────
 # Xabardagi rasmdan FARQI: u yerda Telegram URL'ni o'zi tortadi, bu
@@ -771,6 +842,30 @@ CUSTOM_EMOJI: dict[str, str] = {
 # kalit yasovchi animatsiya chiqadi. Bu ATAYLAB o'zgartirilmadi: kalitni
 # ko'chirish o'sha xabarni ham o'zgartirardi. To'g'rilash kerak bo'lsa
 # pro.py dagi chaqiruvni pe('file', '📄') ga almashtiring.
+
+# ── JAVOB MATNI ICHIDAGI PREMIUM EMOJI ──────────────────────────────
+# CUSTOM_EMOJI ID'lari ilgari faqat ikki joyda ishlatilardi: draft
+# ichidagi <tg-thinking> va tugma ikonkasi. Javob MATNINING o'zida
+# premium emoji hech qachon chiqmasdi.
+#
+# Bu yerda kalit — emojining O'ZI, chunki almashtirish model yozgan
+# matnda amalga oshadi: `build_rich_markdown()` 🤖 ni ko'rib
+# `![ ](tg://emoji?id=...)` ga o'giradi.
+#
+# ⚠️ Ro'yxat ATAYLAB qisqa: faqat botning o'z tilida tez-tez uchraydigan
+# emojilar. Har bir almashtirish ~40 belgi qo'shadi va u 32768 chegarasi
+# hisobiga kiradi.
+TEXT_CUSTOM_EMOJI: dict[str, str] = {
+    "🤖": CUSTOM_EMOJI["bot"],
+    "📄": CUSTOM_EMOJI["file"],
+    "🧠": CUSTOM_EMOJI["memory"],
+    "⏰": CUSTOM_EMOJI["reminder"],
+    "🧹": CUSTOM_EMOJI["broom"],
+    "✍️": CUSTOM_EMOJI["write"],
+}
+# Bitta javobda shuncha almashtirishdan keyin qolganlari oddiy emoji
+# bo'lib qoladi (uzunlik va vizual shovqin chegarasi).
+TEXT_CUSTOM_EMOJI_MAX: int = 12
 
 # Xabar effektlari (faqat SHAXSIY chatda ishlaydi — guruhda xato beradi,
 # shuning uchun yuborishda progressiv fallback bor).

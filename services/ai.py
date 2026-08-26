@@ -35,7 +35,8 @@ try:
         build_system_prompt, build_request_params, pick_reasoning_effort,
         SEARCH_IMAGE_MAX, SEARCH_IMAGE_CANDIDATES, SEARCH_IMAGE_HEAD_TIMEOUT,
         SEARCH_IMAGE_SAFESEARCH, SEARCH_COMMONS_UA, SEARCH_COMMONS_TIMEOUT,
-        SEARCH_IMAGE_MAX_BYTES, SEARCH_IMAGE_SLIDESHOW_MIN,
+        SEARCH_IMAGE_MAX_BYTES, SEARCH_IMAGE_GALLERY_MIN,
+        SEARCH_IMAGE_COLLAGE_MAX, TEXT_CUSTOM_EMOJI, TEXT_CUSTOM_EMOJI_MAX,
         FILE_IMAGE_MAX_QUERIES, FILE_IMAGE_CANDIDATES, FILE_IMAGE_TIMEOUT,
         FILE_IMAGE_MAX_BYTES, FILE_IMAGE_MAX_SIDE, FILE_IMAGE_JPEG_QUALITY,
     )
@@ -57,7 +58,10 @@ except ImportError:
     SEARCH_IMAGE_CANDIDATES = 10
     SEARCH_IMAGE_HEAD_TIMEOUT = 4
     SEARCH_IMAGE_MAX_BYTES = 10 * 1024 * 1024
-    SEARCH_IMAGE_SLIDESHOW_MIN = 2
+    SEARCH_IMAGE_GALLERY_MIN = 2
+    SEARCH_IMAGE_COLLAGE_MAX = 4
+    TEXT_CUSTOM_EMOJI = {}
+    TEXT_CUSTOM_EMOJI_MAX = 12
     SEARCH_IMAGE_SAFESEARCH = "on"
     SEARCH_COMMONS_UA = "TramplinBot/1.0 (Telegram bot; https://t.me)"
     SEARCH_COMMONS_TIMEOUT = 12
@@ -385,6 +389,191 @@ def _compact_tables(text: str) -> str:
     return "\n".join(out)
 
 
+# ─────────────────────────────────────────────────────────────
+# 📂 YIG'ILADIGAN BO'LIM — [batafsil: Sarlavha] ... [/batafsil]
+#
+# ⚠️ NEGA BELGI ORQALI, modelga to'g'ridan-to'g'ri <details> yozdirmasdan:
+# noto'g'ri yozilgan belgi shunchaki TASHLANADI, noto'g'ri yozilgan HTML
+# esa butun xabarni rad ettiradi. `[rasm:N]` bilan bir xil tamoyil —
+# u ishlayotgani allaqachon isbotlangan.
+# ─────────────────────────────────────────────────────────────
+_DETAILS_OPEN_RE = re.compile(r"\[batafsil:\s*([^\]\n]{0,80})\]", re.I)
+_DETAILS_CLOSE_RE = re.compile(r"\[/batafsil\]", re.I)
+_DETAILS_BLOCK_RE = re.compile(
+    r"\[batafsil:\s*([^\]\n]{0,80})\]\s*(.*?)\s*\[/batafsil\]", re.S | re.I)
+
+
+def _strip_details_markers(text: str) -> str:
+    return _DETAILS_CLOSE_RE.sub("", _DETAILS_OPEN_RE.sub("", text))
+
+
+def _replace_details(match) -> str:
+    title = html_escape(match.group(1).strip()) or "Batafsil"
+    # ⚠️ ICHMA-ICH <details> BO'LMAYDI. Naqsh "ochko'z emas", ya'ni
+    # ichkarida qolgan belgilar shunchaki tashlanadi — hujjatdagi 16
+    # daraja chegarasiga yaqinlashmaymiz va tuzilma oddiy qoladi.
+    body = _strip_details_markers(match.group(2)).strip()
+    return (f"\n\n<details><summary>{title}</summary>\n\n"
+            f"{body}\n\n</details>\n\n")
+
+
+# ─────────────────────────────────────────────────────────────
+# 💬 IQTIBOS — [iqtibos: matn | muallif]
+#
+# `<aside>` — matndan ajralib turadigan katta iqtibos. Muallif ixtiyoriy:
+# «|» yozilmasa <cite> umuman qo'yilmaydi.
+#
+# ⚠️ Markdown `<aside>` ICHIDA parslanmaydi (hujjatga ko'ra faqat
+# <details>, <tg-collage>, <tg-slideshow> ichida), shuning uchun matn ham,
+# muallif ham html_escape qilinadi.
+# ─────────────────────────────────────────────────────────────
+_QUOTE_RE = re.compile(r"\[iqtibos:\s*([^\]]{1,600})\]", re.S | re.I)
+
+
+def _replace_quote(match) -> str:
+    body = " ".join(match.group(1).split())
+    matn, sep, muallif = body.rpartition("|")
+    if not sep:                       # muallifsiz variant
+        matn, muallif = body, ""
+    matn, muallif = matn.strip(), muallif.strip()
+    if not matn:
+        return ""
+    cite = f"<cite>{html_escape(muallif)}</cite>" if muallif else ""
+    return f"\n\n<aside>{html_escape(matn)}{cite}</aside>\n\n"
+
+
+def strip_rich_tokens(text: str) -> str:
+    """Ichki belgilarni ODDIY matnga o'giradi (draft va zaxira yo'li uchun).
+
+    Draft — oqim paytidagi xom matn, zaxira yo'li esa oddiy xabar:
+    ikkalasida ham `<details>`/`<aside>` yo'q, lekin foydalanuvchi
+    `[batafsil: ...]` yoki `[iqtibos: ...]` degan ichki belgini ham
+    ko'rmasligi kerak. Sarlavha qalin matnga, iqtibos esa qo'shtirnoqli
+    jumlaga aylanadi — ya'ni belgi yo'qoladi, MA'LUMOT qoladi.
+    """
+    if not text:
+        return text
+    out = _DETAILS_OPEN_RE.sub(lambda m: f"**{m.group(1).strip()}**", text)
+    out = _DETAILS_CLOSE_RE.sub("", out)
+    # Xarita oddiy xabarda chizilmaydi — belgi shunchaki olib tashlanadi
+    # (matnning o'zi joyni baribir aytadi).
+    out = _MAP_RE.sub("", out)
+    return _QUOTE_RE.sub(_plain_quote, out)
+
+
+def _plain_quote(match) -> str:
+    body = " ".join(match.group(1).split())
+    matn, sep, muallif = body.rpartition("|")
+    if not sep:
+        matn, muallif = body, ""
+    matn, muallif = matn.strip(), muallif.strip()
+    return f"«{matn}»" + (f" — {muallif}" if muallif else "")
+
+
+# ─────────────────────────────────────────────────────────────
+# 🤖 MATN ICHIDAGI PREMIUM EMOJI — ![ ](tg://emoji?id=...)
+#
+# ⚠️ ALT MATNDA BO'SH JOY BO'LISHI SHART: `![ ](...)`, `![](...)` EMAS.
+# Hujjatdagi misol aynan shunday va bu tasodif emas — bo'sh alt media
+# blok sifatida o'qilishi mumkin.
+#
+# ⚠️ Faqat markdown PARSLANADIGAN joyda: jadval katagi (<td>) va
+# <aside> ichida markdown parslanmaydi, ya'ni u yerda almashtirish
+# `![ ](tg://...)` degan XOM matnni ekranga chiqarardi. O'sha joylarda
+# oddiy emoji o'z holicha qoladi va normal ko'rinadi.
+# ─────────────────────────────────────────────────────────────
+_EMOJI_IDS = {e.rstrip("️"): i for e, i in TEXT_CUSTOM_EMOJI.items()}
+_TEXT_EMOJI_RE = re.compile(
+    "(" + "|".join(re.escape(e) for e in
+                   sorted(_EMOJI_IDS, key=len, reverse=True)) + ")️?"
+) if _EMOJI_IDS else re.compile(r"(?!)")   # bo'sh ro'yxatda hech narsa
+_MD_DEAD_ZONE_RE = re.compile(
+    r"(<table\b.*?</table>|<aside\b.*?</aside>)", re.S)
+_CUSTOM_EMOJI_MD_RE = re.compile(r"!\[ ?\]\(tg://emoji\?id=(\d+)\)")
+_ID_TO_EMOJI = {i: e for e, i in TEXT_CUSTOM_EMOJI.items()}
+
+
+def _outside_dead_zones(text: str, fn) -> str:
+    """`fn` ni FAQAT markdown parslanadigan bo'laklarga qo'llaydi.
+
+    Jadval katagi (`<td>`) va `<aside>` ichida markdown parslanmaydi —
+    u yerdagi almashtirish ekranga xom matn chiqarardi. `re.split`
+    saqlab qoluvchi guruh bilan o'sha bloklarni ham qaytaradi, ya'ni
+    juft indekslar — "tirik" matn, toqlari — tegilmaydigan bloklar.
+    """
+    bolaklar = _MD_DEAD_ZONE_RE.split(text)
+    for i in range(0, len(bolaklar), 2):
+        bolaklar[i] = fn(bolaklar[i])
+    return "".join(bolaklar)
+
+
+def _replace_text_emoji(text: str) -> str:
+    qoldi = TEXT_CUSTOM_EMOJI_MAX
+
+    def one(match):
+        nonlocal qoldi
+        eid = _EMOJI_IDS.get(match.group(1))
+        if not eid or qoldi <= 0:
+            return match.group(0)
+        qoldi -= 1
+        return f"![ ](tg://emoji?id={eid})"
+
+    return _outside_dead_zones(text, lambda t: _TEXT_EMOJI_RE.sub(one, t))
+
+
+# ─────────────────────────────────────────────────────────────
+# 🗺 XARITA — [xarita:41.3111,69.2797,13]
+#
+# «Samarqand qayerda», «bu restoran qayerda», «Verdun jangi qayerda
+# bo'lgan», sayohat rejasi — bularda xarita rasmdan ham foydaliroq va bu
+# Telegram'ga XOS imkoniyat (veb-chatbot xarita chiza olmaydi).
+#
+# Koordinatani MODEL yozadi, geokodlash yo'q: yana bitta tarmoq so'rovi,
+# yana bitta rate limit, yana bitta buzilish nuqtasi bo'lardi.
+#
+# ⚠️ NOTO'G'RI KOORDINATANI TEKSHIRIB BO'LMAYDI: 41.9/12.5 — Rim,
+# 41.3/69.3 — Toshkent, ikkalasi ham "to'g'ri ko'rinadi". Kod faqat
+# CHEGARANI tekshiradi, to'g'riligini emas — shuning uchun promptda
+# qat'iy shart bor: faqat ANIQ bilgan joy uchun yozilsin.
+#
+# ⚠️ `<tg-map/>` — YOPILUVCHI teg. `<tg-map></tg-map>` deb yozilsa butun
+# xabar rad etiladi.
+# ─────────────────────────────────────────────────────────────
+_MAP_RE = re.compile(
+    r"\[xarita:\s*(-?\d{1,3}(?:\.\d+)?)\s*,\s*(-?\d{1,3}(?:\.\d+)?)"
+    r"(?:\s*,\s*(\d{1,2}))?\s*\]", re.I)
+_MAP_ZOOM_DEFAULT = 13
+
+
+def _replace_map(match) -> str:
+    """Belgini `<tg-map/>` ga o'giradi; chegaradan chiqsa — o'chiradi."""
+    try:
+        lat = float(match.group(1))
+        long_ = float(match.group(2))
+        zoom = int(match.group(3)) if match.group(3) else _MAP_ZOOM_DEFAULT
+    except (TypeError, ValueError):
+        return ""
+    if not (-90 <= lat <= 90 and -180 <= long_ <= 180 and 1 <= zoom <= 20):
+        # `[rasm:N]` bilan bir xil tamoyil: noto'g'ri belgi jimgina
+        # tashlanadi, javob esa hech qanday holatda buzilmaydi.
+        return ""
+    return f'\n\n<tg-map lat="{lat}" long="{long_}" zoom="{zoom}"/>\n\n'
+
+
+def strip_custom_emoji(markdown: str) -> str:
+    """Premium emojini oddiy emojiga QAYTARADI (zaxira pog'onasi uchun).
+
+    ⚠️ Matn ichidagi custom emoji bot egasida Telegram Premium bo'lishini
+    talab qiladi. Obuna tugasa Telegram BUTUN xabarni rad etadi — javob
+    esa bezakdan muhimroq. Rad etilganda shu funksiya bilan tozalangan
+    variant qayta yuboriladi (rasm havolasi bilan bir xil tamoyil).
+    """
+    if not markdown:
+        return markdown
+    return _CUSTOM_EMOJI_MD_RE.sub(
+        lambda m: _ID_TO_EMOJI.get(m.group(1), ""), markdown)
+
+
 def build_rich_markdown(text: str) -> str:
     """Best-effort rich message markdown for Telegram Bot API 10.3."""
     if not text:
@@ -399,6 +588,19 @@ def build_rich_markdown(text: str) -> str:
     protected = _RICH_MATH_BLOCK_RE.sub(_replace_math_block, protected)
     protected = _RICH_MATH_INLINE_RE.sub(_replace_math_inline, protected)
     protected = _replace_dates(protected)
+    # Yig'iladigan bo'lim — himoya ICHIDA: kod bloki ichidagi
+    # `[batafsil: ...]` matni bo'lim ochib yubormasin. Juftini topmagan
+    # belgi tashlanadi, ya'ni yarim yozilgan belgi xabarni buzmaydi.
+    protected = _strip_details_markers(
+        _DETAILS_BLOCK_RE.sub(_replace_details, protected))
+    # Iqtibos — xuddi shu tamoyil, bitta belgi bilan.
+    protected = _QUOTE_RE.sub(_replace_quote, protected)
+    # Xarita — media blok, ya'ni jadval katagi va <aside> ichida emas.
+    protected = _outside_dead_zones(
+        protected, lambda t: _MAP_RE.sub(_replace_map, t))
+    # Premium emoji ENG OXIRIDA: yuqoridagi bosqichlar hosil qilgan
+    # jadval va <aside> bloklarini ko'rib, ularni chetlab o'tishi kerak.
+    protected = _replace_text_emoji(protected)
     protected = _restore_spans(protected, placeholders)
     # Manbalar — himoyadan KEYIN, chunki href'ga haqiqiy URL kerak.
     return _collapse_sources(protected)
@@ -786,16 +988,41 @@ def strip_image_tokens(text: str) -> str:
     return _IMAGE_ANY_TOKEN_RE.sub("", text)
 
 
-def _image_block(img: dict) -> str:
+def _image_block(img: dict, *, caption: bool = True) -> str:
     """Bitta rasm — rich markdown media bloki.
 
     Sarlavhada manba sayt ko'rsatiladi: rasm o'zganiki, muallifligini
     o'zimizga olib qo'yish to'g'ri emas.
+
+    `caption=False` — faqat KOLLAJ uchun: u yerda sarlavha bitta bo'ladi
+    va manbalar birga yoziladi (pastdagi `_collage()` ga qarang).
     """
+    if not caption:
+        return f'![]({img["url"]})'
     title = (img.get("title") or "").replace('"', "'").strip()
     source = (img.get("source") or "").strip()
-    caption = " — ".join(p for p in (title[:80], source) if p)
-    return f'![]({img["url"]} "{caption}")' if caption else f'![]({img["url"]})'
+    cap = " — ".join(p for p in (title[:80], source) if p)
+    return f'![]({img["url"]} "{cap}")' if cap else f'![]({img["url"]})'
+
+
+def _collage(images: List[dict]) -> str:
+    """2-4 rasm — bitta ekranda ko'rinadigan kollaj.
+
+    ⚠️ KOLLAJDA SARLAVHA BITTA: har bir rasm ostiga alohida manba yozib
+    bo'lmaydi. Manba esa MAJBURIY — rasm o'zganiki. Shuning uchun ichki
+    bloklar sarlavhasiz beriladi, manbalar bitta `<figcaption>` ga
+    vergul bilan yig'iladi. (Slideshow'da bu muammo yo'q: u rasmlarni
+    bittalab ko'rsatadi, ya'ni har biri o'z sarlavhasi bilan qoladi.)
+    """
+    inner = "\n\n".join(_image_block(i, caption=False) for i in images)
+    manbalar: list[str] = []
+    for img in images:
+        src = (img.get("source") or "").strip()
+        if src and src not in manbalar:
+            manbalar.append(src)
+    cap = (f"<figcaption>Manba: {html_escape(', '.join(manbalar))}</figcaption>"
+           if manbalar else "")
+    return f"\n\n<figure><tg-collage>\n\n{inner}\n\n</tg-collage>{cap}</figure>\n\n"
 
 
 def embed_images(markdown: str, images: List[dict]) -> str:
@@ -818,12 +1045,18 @@ def embed_images(markdown: str, images: List[dict]) -> str:
         return ""
 
     def gallery(_match):
-        if len(images) >= SEARCH_IMAGE_SLIDESHOW_MIN:
+        # Bir nechta rasm ikki xil ko'rsatiladi. Kollaj — hammasi BIR
+        # EKRANDA, ya'ni bir qarashda ko'rinadi; slideshow esa surib
+        # ko'riladi. 2-4 ta uchun kollaj yaxshiroq, 5+ da kollaj rasmlarni
+        # juda mayda qilib yuboradi — o'shanda slideshow o'z o'rniga ega.
+        if len(images) > SEARCH_IMAGE_COLLAGE_MAX:
             # <tg-slideshow> ichida markdown PARSLANADI (hujjatda ruxsat
             # etilgan uchta blokdan biri) — lekin faqat bo'sh qatorlar
             # bilan ajratilgan holda.
             inner = "\n".join(_image_block(i) for i in images)
             return f"\n\n<tg-slideshow>\n\n{inner}\n\n</tg-slideshow>\n\n"
+        if len(images) >= SEARCH_IMAGE_GALLERY_MIN:
+            return _collage(images)
         return f"\n\n{_image_block(images[0])}\n\n"
 
     out = _IMAGE_GALLERY_RE.sub(gallery, markdown)
@@ -1366,14 +1599,30 @@ _TOOLS = [
                         "rasm to'g'ridan-to'g'ri chatga chiqadi. Fayl yoki PPTX "
                         "yaratish KERAK EMAS, va «rasm yubora olmayman» deb HECH "
                         "QACHON yozmang — yubora olasiz.\n"
-                        "true QILING, agar so'rov ko'rgazmali bo'lsa: avtomobil, telefon "
-                        "yoki boshqa mahsulot, shahar/joy/bino, hayvon, o'simlik, taom, "
-                        "mashhur shaxs, kiyim, dizayn namunasi — yoki foydalanuvchi "
-                        "'rasm', 'surat', 'ko'rsat', 'qanday ko'rinadi' deb so'ragan bo'lsa.\n"
-                        "false QOLDIRING: valyuta kursi, ob-havo, yangilik matni, narx, "
-                        "statistika, ta'rif, tarix, maslahat, kod, hisob-kitob — ya'ni "
-                        "javob matn bilan to'liq tushunarli bo'ladigan hamma holat.\n"
-                        "Shubhalansangiz false qiling: keraksiz rasm javobni og'irlashtiradi."
+                        "true QILING: mavzuning KO'Z BILAN KO'RILADIGAN ko'rinishi "
+                        "bo'lsa — mahsulot, jonzot, o'simlik, taom, joy, bino, shaxs, "
+                        "asar, asbob, hodisa, tarixiy voqea. Qarorni O'ZINGIZ qabul "
+                        "qilasiz: foydalanuvchi 'rasm' so'zini aytishi SHART EMAS.\n"
+                        "false QOLDIRING: mavhum tushuncha (iqtisodiyot, motivatsiya, "
+                        "strategiya), raqam va hisob (valyuta kursi, ob-havo, "
+                        "statistika), kod, matematika, maslahat, tarjima.\n"
+                        "Shubhalansangiz: mavzuning aniq ko'rinishi bo'lsa — TRUE."
+                    ),
+                },
+                "images_only": {
+                    "type": "boolean",
+                    "description": (
+                        "Veb qidiruvsiz FAQAT rasm. Standart: false.\n"
+                        "true QILING, agar savolga O'Z BILIMINGIZ bilan javob "
+                        "bera olsangiz, lekin javobga rasm kerak bo'lsa: "
+                        "«Eyfel minorasi haqida ayt», «tulki qanday hayvon», "
+                        "«Amir Temur kim edi». Sahifalar yuklanmaydi — bir "
+                        "soniya va nol token, javobni o'zingiz yozasiz.\n"
+                        "false QOLDIRING, agar o'zgaruvchan yoki yangi ma'lumot "
+                        "kerak bo'lsa (narx, kurs, ob-havo, yangilik) — u holda "
+                        "qidiruv ham, rasm ham bitta chaqiruvda keladi.\n"
+                        "⚠️ want_images ni ham true qiling. primary_query baribir "
+                        "shart — rasm so'rovi undan olinadi."
                     ),
                 },
                 "image_query": {
@@ -1386,8 +1635,11 @@ _TOOLS = [
                         "NEGA ALOHIDA: asosiy so'rov veb uchun yoziladi — uzun, "
                         "site: filtri va raqamlar bilan. Rasm indeksida bunday "
                         "so'rov aloqasiz natija beradi. Bezak so'zlarini "
-                        "('classic', 'chiroyli', '2024', 'narxi') QO'SHMANG — "
+                        "('classic', 'chiroyli', 'narxi') QO'SHMANG — "
                         "ular rasmni topishga xalaqit beradi.\n"
+                        "YIL — bezak EMAS, agar u modelni ajratsa: 'Hongqi H5 "
+                        "2025', 'iPhone 17'. Umumiy mavzuda ('Samarqand "
+                        "Registan') yil YOZMANG.\n"
                         "Berilmasa asosiy so'rovdan avtomatik olinadi, lekin "
                         "natija yomonroq bo'ladi."
                     ),
@@ -2701,6 +2953,12 @@ async def get_openai_reply(
         file_task_ran = False
         image_ran = False
         search_ran = False
+        # ⚠️ search_ran va web_search_ran AYRIM: birinchisi byudjetni
+        # yeydi (images_only chaqiruvi ham), ikkinchisi esa manbalar
+        # ro'yxatini talab qiladigan sintez promptini yoqadi. images_only
+        # da manba yo'q — u promptni yoqsa, "tulki qanday hayvon" javobi
+        # manbalar ro'yxatli hisobotga aylanib qolardi.
+        web_search_ran = False
         memory_ran = False
         reminder_ran = False
 
@@ -2748,18 +3006,32 @@ async def get_openai_reply(
                 search_ran = True
                 primary_query = args.get("primary_query", "")
                 extra_queries = args.get("extra_queries", [])
+                # ⚠️ images_only va want_images BITTA ma'noni bildiradi.
+                # Model ikkinchisini yozishni unutsa, tool jimgina bo'sh
+                # qaytardi — ya'ni "rasm topilmadi" degan yolg'on signal.
+                images_only = bool(args.get("images_only"))
+                want_images = bool(args.get("want_images")) or images_only
 
                 if primary_query:
                     logger.info(
                         f"[SEARCH] primary='{primary_query}' extra={extra_queries} "
-                        f"images={bool(args.get('want_images'))} round={search_rounds + 1}"
+                        f"images={want_images} only={images_only} "
+                        f"round={search_rounds + 1}"
                     )
-                    tool_output = await multi_source_deep_search(
-                        primary_query=primary_query,
-                        extra_queries=extra_queries if extra_queries else None,
-                        fetch_pages=6 if research else 3,
-                        max_queries=4 if research else 3,
-                    )
+                    if images_only:
+                        # Veb qidiruv UMUMAN ishlamaydi: sahifa yuklanmaydi,
+                        # token sarflanmaydi (~5-10s va ~5 ming token
+                        # tejaladi). Javobni model o'z bilimidan yozadi,
+                        # biz faqat rasm qo'shamiz.
+                        tool_output = ""
+                    else:
+                        web_search_ran = True
+                        tool_output = await multi_source_deep_search(
+                            primary_query=primary_query,
+                            extra_queries=extra_queries if extra_queries else None,
+                            fetch_pages=6 if research else 3,
+                            max_queries=4 if research else 3,
+                        )
                     # Rasm FAQAT bir marta qidiriladi: ikkinchi raundda
                     # ro'yxat almashsa, model birinchi ro'yxatga qarab
                     # yozgan [rasm:2] boshqa rasmga tegib ketardi.
@@ -2771,13 +3043,13 @@ async def get_openai_reply(
                     # kontekstga qo'shadi — uch raunddan keyin so'rov 79 ming
                     # tokenga yetib, OpenAI TPM limitiga urilardi va 50
                     # soniya ishlangan javob BUTUNLAY yo'qolardi.
-                    if args.get("want_images") and images_out:
+                    if want_images and images_out:
                         tool_output += (
                             format_image_catalog(images_out)
                             + "\n⚠️ Bu — shu javobdagi BARCHA rasmlar. "
                               "Rasm uchun qayta qidirmang.\n"
                         )
-                    elif (args.get("want_images") and images_out is not None
+                    elif (want_images and images_out is not None
                             and not images_out):
                         try:
                             # ⚠️ VEB so'rovi RASM qidiruviga to'g'ridan-to'g'ri
@@ -2793,6 +3065,14 @@ async def get_openai_reply(
                         if found:
                             images_out.extend(found)
                             tool_output += format_image_catalog(found)
+
+                    # ⚠️ JIM QAYTGAN TOOL — kontekst portlashining sababi.
+                    # images_only da veb natijasi yo'q, ya'ni rasm ham
+                    # topilmasa javob BO'SH bo'lardi va model qidiruvni
+                    # takrorlab yurardi. Aniq matn qaytaramiz.
+                    if not tool_output.strip():
+                        tool_output = ("Mos rasm topilmadi. Javobni rasmsiz "
+                                       "yozing — qayta qidirmang.")
                 else:
                     tool_output = "Qidiruv so'rovi bo'sh bo'lgani uchun bajarilmadi."
 
@@ -2841,7 +3121,7 @@ async def get_openai_reply(
         # update_memory'ni chaqirib, javob manbalar ro'yxatli qidiruv
         # hisobotiga aylanib ketardi. Endi u qidiruvga QAT'IY bog'langan —
         # fayl, rasm, xotira va eslatma oqimlariga umuman tegmaydi.
-        if search_ran and not synthesis_injected:
+        if web_search_ran and not synthesis_injected:
             messages.append({"role": "developer", "content": _SYNTHESIS_SYSTEM})
             synthesis_injected = True
             needs_clear = True

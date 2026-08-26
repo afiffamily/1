@@ -13,6 +13,7 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+from aiogram import Dispatcher
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 
 from core.config import MAX_MANUAL_RETRIES
@@ -119,9 +120,26 @@ out = embed_images("Old ko'rinishi [rasm:1] mana.", imgs)
 check(10, "[rasm:N] media blokiga aylanadi",
       "![](https://a.example/1.jpg" in out and "[rasm:1]" not in out)
 
+# 2-4 rasm — KOLLAJ (hammasi bir ekranda), 5+ — slideshow (surib
+# ko'riladi). Kollajda sarlavha bitta, shuning uchun manbalar bitta
+# <figcaption> ga yig'iladi: rasm o'zganiki, manba MAJBURIY.
 gal = embed_images("Galereya: [rasmlar]", imgs)
-check(11, "[rasmlar] slideshow beradi",
-      "<tg-slideshow>" in gal and gal.count("![](") == 2)
+check(11, "2 rasm kollajga yig'iladi, manba figcaption'da",
+      "<tg-collage>" in gal and "<tg-slideshow>" not in gal
+      and gal.count("![](") == 2
+      and "<figcaption>Manba: a.example</figcaption>" in gal)
+
+ko_p = imgs + [{"url": f"https://a.example/{n}.jpg", "title": f"M5 {n}",
+                "source": "b.example"} for n in range(3, 6)]
+gal5 = embed_images("Galereya: [rasmlar]", ko_p)
+check("11a", "5 rasm slideshow bo'lib qoladi (kollajda juda mayda)",
+      "<tg-slideshow>" in gal5 and "<tg-collage>" not in gal5
+      and gal5.count("![](") == 5)
+
+yakka = embed_images("Galereya: [rasmlar]", imgs[:1])
+check("11b", "bitta rasm yakka blok bo'lib qoladi",
+      "<tg-collage>" not in yakka and "<tg-slideshow>" not in yakka
+      and yakka.count("![](") == 1 and "M5 CS old" in yakka)
 
 bad = embed_images("Yo'q rasm [rasm:9] oxiri", imgs)
 check(12, "mavjud bo'lmagan raqam jimgina o'chiriladi",
@@ -492,6 +510,25 @@ check(38, "rasmli xabarga uzunroq timeout beriladi, oddiysiga tegilmaydi",
       sess_media.kwargs.get("timeout") is not None
       and sess_media.kwargs["timeout"].total == msg.RICH_MEDIA_TIMEOUT
       and "timeout" not in sess_plain.kwargs)
+
+
+# ─────────────────────────────────────────────────────────────
+# 39. stopped_message_generation OBSERVER'DAN O'ZI TOPILADI
+# ─────────────────────────────────────────────────────────────
+# main.py'da allowed_updates endi qo'lda to'ldirilmaydi. Bu xavfsiz
+# bo'lishi uchun aiogram observer'ga yozilgan handlerdan update turini
+# O'ZI chiqara olishi shart — aks holda Telegram bu update'ni hech
+# qachon yubormaydi va to'xtatish tugmasi jimgina ishlamay qo'yadi.
+_dp = Dispatcher()
+
+
+@_dp.stopped_message_generation()
+async def _stop_handler(event):
+    return None
+
+
+check(39, "handler borligida resolve_used_update_types uni topadi",
+      "stopped_message_generation" in _dp.resolve_used_update_types())
 
 
 # ─────────────────────────────────────────────────────────────

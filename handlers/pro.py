@@ -186,7 +186,9 @@ def _downgrade_kb(kb: InlineKeyboardMarkup | None) -> InlineKeyboardMarkup | Non
             "url": b.url,
             "switch_inline_query": b.switch_inline_query,
         }
-        disabled = (b.model_extra or {}).get("disabled")
+        # aiogram 3.31 dan boshlab `disabled` — haqiqiy maydon, undan
+        # oldin esa faqat extra edi; ikkalasi ham tekshiriladi.
+        disabled = getattr(b, "disabled", None) or (b.model_extra or {}).get("disabled")
         if disabled is not None:
             kwargs = {"text": b.text, "disabled": disabled}
         return InlineKeyboardButton(**kwargs)
@@ -195,7 +197,7 @@ def _downgrade_kb(kb: InlineKeyboardMarkup | None) -> InlineKeyboardMarkup | Non
     # force_reply — bezak emas, oqimning bir qismi (foydalanuvchi javob
     # yozishi kutilyapti), shuning uchun chekinishda ham saqlanadi.
     extra = {}
-    if (kb.model_extra or {}).get("force_reply"):
+    if getattr(kb, "force_reply", None) or (kb.model_extra or {}).get("force_reply"):
         extra["force_reply"] = True
     return InlineKeyboardMarkup(inline_keyboard=rows, **extra)
 
