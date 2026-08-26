@@ -12,7 +12,8 @@ from contextlib import AsyncExitStack
 from datetime import datetime, timezone, timedelta
 from typing import List, Dict, Optional
 from html import escape as html_escape
-from urllib.parse import urlparse
+from urllib.parse import urlparse, urlencode
+from urllib.request import Request, urlopen
 
 from ddgs import DDGS
 from openai import NotFoundError, RateLimitError
@@ -33,7 +34,7 @@ try:
         IMAGE_CAPABILITY_NOTE,
         build_system_prompt, build_request_params, pick_reasoning_effort,
         SEARCH_IMAGE_MAX, SEARCH_IMAGE_CANDIDATES, SEARCH_IMAGE_HEAD_TIMEOUT,
-        SEARCH_IMAGE_SAFESEARCH,
+        SEARCH_IMAGE_SAFESEARCH, SEARCH_COMMONS_UA, SEARCH_COMMONS_TIMEOUT,
         SEARCH_IMAGE_MAX_BYTES, SEARCH_IMAGE_SLIDESHOW_MIN,
         FILE_IMAGE_MAX_QUERIES, FILE_IMAGE_CANDIDATES, FILE_IMAGE_TIMEOUT,
         FILE_IMAGE_MAX_BYTES, FILE_IMAGE_MAX_SIDE, FILE_IMAGE_JPEG_QUALITY,
@@ -58,6 +59,8 @@ except ImportError:
     SEARCH_IMAGE_MAX_BYTES = 10 * 1024 * 1024
     SEARCH_IMAGE_SLIDESHOW_MIN = 2
     SEARCH_IMAGE_SAFESEARCH = "on"
+    SEARCH_COMMONS_UA = "TramplinBot/1.0 (Telegram bot; https://t.me)"
+    SEARCH_COMMONS_TIMEOUT = 12
     FILE_IMAGE_MAX_QUERIES = 6
     FILE_IMAGE_CANDIDATES = 5
     FILE_IMAGE_TIMEOUT = 15
@@ -468,6 +471,10 @@ def _content_size(headers) -> Optional[int]:
     return None
 
 
+# Havolasi API tomonidan qaytarilgan, ya'ni mavjudligi kafolatlangan hostlar.
+_TRUSTED_IMAGE_HOSTS = {"upload.wikimedia.org"}
+
+
 async def _image_url_ok(session: aiohttp.ClientSession, url: str) -> bool:
     """URL haqiqatan ham tirik rasmmi — Telegram uni tortib ololadimi?
 
@@ -475,6 +482,12 @@ async def _image_url_ok(session: aiohttp.ClientSession, url: str) -> bool:
     405/403 qaytaradi, lekin bir baytlik Range so'roviga to'g'ri javob
     beradi. Tanadan hech narsa o'qilmaydi — trafik amalda nolga teng.
     """
+    # ⚠️ ISHONCHLI HOSTLAR TEKSHIRILMAYDI. Havolani Commons API'ning o'zi
+    # qaytargan, ya'ni u mavjudligi kafolatlangan. Aksincha, 10 ta so'rovni
+    # bir vaqtda yuborish Wikimedia'dan **429** oladi va TIRIK rasmlar
+    # "o'lik" deb tashlanardi: 10 nomzoddan 1 tasi qolardi.
+    if _host_of(url) in _TRUSTED_IMAGE_HOSTS:
+        return True
     try:
         headers = {
             "Range": "bytes=0-0",
@@ -517,6 +530,10 @@ _IMG_STOPWORDS = {
     "high", "quality", "professional", "modern", "concept", "illustration",
     "background", "design", "view", "best", "free", "stock", "with", "and",
     "the", "for", "from", "rasm", "rasmi", "surat", "foto",
+    # Tasodifan mos keladigan bezak so'zlari: "classic" tufayli
+    # Roblox personajlari Hongqi so'roviga o'tib ketgan edi.
+    "classic", "latest", "style", "beautiful", "amazing", "awesome",
+    "cool", "detail", "details", "cinematic", "collage",
 }
 
 
@@ -560,20 +577,94 @@ def image_query(text: str) -> str:
     return " ".join(q.split()[:8])
 
 
-async def search_images(query: str, *, limit: int = SEARCH_IMAGE_MAX) -> List[dict]:
-    """Internetdan rasm qidiradi va FAQAT tirik havolalarni qaytaradi.
+_COMMONS_API = "https://commons.wikimedia.org/w/api.php"
 
-    Natija: [{"url": ..., "title": ..., "source": ...}, ...] — ko'pi bilan
-    `limit` ta. Rasm yuklab olinmaydi, faqat havolasi tekshiriladi.
+
+def _commons_images_sync(query: str, max_results: int) -> List[dict]:
+    """Wikimedia Commons — rasmlar uchun BIRINCHI manba.
+
+    ⚠️ NEGA BIRINCHI: serverda DuckDuckGo rasm API'si 403 qaytaradi
+    (data-markaz IP'si bloklangan) va `ddgs` jimgina Bing'ga o'tadi —
+    uning natijalari esa so'rovga MUTLAQO aloqasiz bo'lib chiqadi.
+    «Hongqi H5 Classic» so'roviga Roblox personajlari, keyin fandom
+    saytidagi fanart kelgan. Bing natijalarini filtrlash — yutqaziladigan
+    kurash, chunki tasodifiy moslik («classic») doim topiladi.
+
+    Commons esa: IP bo'yicha bloklamaydi, natijalari mavzuga aniq mos
+    (avtomobil, tarix, fan, geografiya — taqdimot uchun kerak bo'ladigan
+    hamma narsa), rasmlari erkin litsenziyada, ya'ni o'quvchi taqdimotiga
+    qo'yish huquqiy jihatdan ham xavfsiz.
+
+    Qaytadigan tuzilma `_ddg_images_sync` bilan AYNAN bir xil, shuning
+    uchun quyi oqimdagi kod umuman o'zgarmaydi.
     """
-    raw = await asyncio.to_thread(_ddg_images_sync, query, SEARCH_IMAGE_CANDIDATES)
-    if not raw:
+    params = {
+        "action": "query", "format": "json", "generator": "search",
+        # `filetype:bitmap` — SVG va PDF chiqib ketadi (Telegram ham,
+        # python-pptx ham ularni ko'rsata olmaydi).
+        "gsrsearch": f"filetype:bitmap {query}",
+        "gsrnamespace": "6",              # 6 = File:
+        "gsrlimit": str(max(1, min(max_results, 20))),
+        "prop": "imageinfo", "iiprop": "url",
+        "iiurlwidth": "1280",             # katta asl fayl emas, mos o'lcham
+    }
+    url = f"{_COMMONS_API}?{urlencode(params)}"
+    try:
+        req = Request(url, headers={"User-Agent": SEARCH_COMMONS_UA})
+        with urlopen(req, timeout=SEARCH_COMMONS_TIMEOUT) as resp:
+            data = json.loads(resp.read().decode("utf-8", errors="replace"))
+    except Exception as e:
+        logger.warning(f"[IMAGES] Commons xatosi [{query}]: {e}")
         return []
 
-    # Nomzodlarni tozalash: takrorlar va https bo'lmagan havolalar chiqib
-    # ketadi. http ham Telegram uchun ruxsat etilgan, lekin ko'p sayt uni
-    # 301 bilan https'ga uloqtiradi — tekshiruvni bekorga uzaytiradi.
-    tokens = _query_tokens(query)
+    out: List[dict] = []
+    for page in (data.get("query", {}).get("pages", {}) or {}).values():
+        info = (page.get("imageinfo") or [{}])[0]
+        thumb = info.get("thumburl") or info.get("url")
+        if not thumb or not thumb.startswith("https://"):
+            continue
+        sarlavha = re.sub(r"^File:|\.\w+$", "", page.get("title") or "").strip()
+        out.append({
+            "image": thumb,
+            "title": sarlavha,
+            "url": info.get("descriptionurl") or thumb,
+            "source": "commons.wikimedia.org",
+        })
+    return out
+
+
+def _images_sync(query: str, max_results: int) -> List[dict]:
+    """Commons birinchi; natija bo'lmasa — ddgs (Bing/DDG) zaxirasi.
+
+    ⚠️ Commons SO'ZMA-SO'Z qidiradi: «Hongqi H5 Classic» hech narsa
+    bermaydi, «Hongqi H5» esa o'nlab aniq suratni beradi. Shuning uchun
+    natija bo'lmasa so'rov qisqartirilib bir marta qayta so'raladi —
+    odatda oxirgi so'z bezak bo'ladi ("classic", "2024", "narxi").
+    """
+    for q in (query, " ".join(query.split()[:3])):
+        if not q or (q != query and len(query.split()) <= 3):
+            break
+        found = _commons_images_sync(q, max_results)
+        if found:
+            logger.info(f"[IMAGES] «{q}»: Commons {len(found)} ta berdi")
+            return found
+    return []
+
+
+def _image_sources(query: str, max_results: int):
+    """Manbalar USTUVORLIK bo'yicha: Commons, keyin ddgs.
+
+    ⚠️ Ro'yxat qaytarish yetarli emas — har bir manba ALOHIDA sinaladi.
+    Commons topgan havolalarning bir qismi tirik bo'lmasligi mumkin
+    (thumbnail hali yaratilmagan), o'shanda butun so'rov rasmsiz
+    qolmasligi uchun ddgs'ga tushish kerak.
+    """
+    yield ("Commons", lambda: _images_sync(query, max_results))
+    yield ("ddgs", lambda: _ddg_images_sync(query, max_results))
+
+
+def _clean_candidates(raw: List[dict], tokens: List[str]) -> tuple:
+    """Takrorlar, https bo'lmaganlar va MAVZUGA ALOQASIZLAR chiqariladi."""
     seen: set = set()
     candidates: List[dict] = []
     tashlandi = 0
@@ -591,21 +682,39 @@ async def search_images(query: str, *, limit: int = SEARCH_IMAGE_MAX) -> List[di
             # Manba sayt — sarlavhada ko'rsatiladi (o'zganing rasmi).
             "source": (r.get("source") or _host_of(r.get("url") or url)),
         })
+    return candidates, tashlandi
 
-    if not candidates:
-        return []
 
+async def search_images(query: str, *, limit: int = SEARCH_IMAGE_MAX) -> List[dict]:
+    """Internetdan rasm qidiradi va FAQAT tirik havolalarni qaytaradi.
+
+    Natija: [{"url": ..., "title": ..., "source": ...}, ...] — ko'pi bilan
+    `limit` ta. Rasm yuklab olinmaydi, faqat havolasi tekshiriladi.
+    """
+    tokens = _query_tokens(query)
     timeout = aiohttp.ClientTimeout(total=SEARCH_IMAGE_HEAD_TIMEOUT)
-    async with aiohttp.ClientSession(timeout=timeout) as session:
-        checks = await asyncio.gather(
-            *(_image_url_ok(session, c["url"]) for c in candidates),
-            return_exceptions=True,
-        )
 
-    alive = [c for c, ok in zip(candidates, checks) if ok is True]
-    logger.info(f"[IMAGES] «{query}»: {len(candidates)} nomzod → {len(alive)} tirik"
-                f"{f', {tashlandi} ta aloqasiz tashlandi' if tashlandi else ''}")
-    return alive[:limit]
+    for nom, olish in _image_sources(query, SEARCH_IMAGE_CANDIDATES):
+        raw = await asyncio.to_thread(olish)
+        if not raw:
+            continue
+        candidates, tashlandi = _clean_candidates(raw, tokens)
+        if not candidates:
+            logger.info(f"[IMAGES] «{query}» [{nom}]: hammasi aloqasiz, tashlandi")
+            continue
+
+        async with aiohttp.ClientSession(timeout=timeout) as session:
+            checks = await asyncio.gather(
+                *(_image_url_ok(session, c["url"]) for c in candidates),
+                return_exceptions=True,
+            )
+        alive = [c for c, ok in zip(candidates, checks) if ok is True]
+        logger.info(f"[IMAGES] «{query}» [{nom}]: {len(candidates)} nomzod → "
+                    f"{len(alive)} tirik"
+                    f"{f', {tashlandi} aloqasiz' if tashlandi else ''}")
+        if alive:
+            return alive[:limit]
+    return []
 
 
 def _host_of(url: str) -> str:
@@ -762,7 +871,7 @@ async def _download_capped(session: aiohttp.ClientSession, url: str) -> Optional
 
 async def _one_image(session: aiohttp.ClientSession, query: str) -> tuple:
     """Bitta so'rov uchun ishlaydigan rasm topadi. -> (baytlar|None, manba)."""
-    candidates = await asyncio.to_thread(_ddg_images_sync, query, FILE_IMAGE_CANDIDATES)
+    candidates = await asyncio.to_thread(_images_sync, query, FILE_IMAGE_CANDIDATES)
     tokens = _query_tokens(query)
     for c in candidates:
         url = (c.get("image") or "").strip()
@@ -1232,6 +1341,22 @@ _TOOLS = [
                         "statistika, ta'rif, tarix, maslahat, kod, hisob-kitob — ya'ni "
                         "javob matn bilan to'liq tushunarli bo'ladigan hamma holat.\n"
                         "Shubhalansangiz false qiling: keraksiz rasm javobni og'irlashtiradi."
+                    ),
+                },
+                "image_query": {
+                    "type": "string",
+                    "description": (
+                        "FAQAT want_images=true bo'lganda. Rasm qidiruvi uchun "
+                        "QISQA (2-4 so'z) so'rov — INGLIZCHA yoki xalqaro nom "
+                        "bilan. Masalan: 'Hongqi H5 sedan', 'Samarkand Registan', "
+                        "'artificial intelligence robot'.\n"
+                        "NEGA ALOHIDA: asosiy so'rov veb uchun yoziladi — uzun, "
+                        "site: filtri va raqamlar bilan. Rasm indeksida bunday "
+                        "so'rov aloqasiz natija beradi. Bezak so'zlarini "
+                        "('classic', 'chiroyli', '2024', 'narxi') QO'SHMANG — "
+                        "ular rasmni topishga xalaqit beradi.\n"
+                        "Berilmasa asosiy so'rovdan avtomatik olinadi, lekin "
+                        "natija yomonroq bo'ladi."
                     ),
                 },
             },
@@ -2593,7 +2718,9 @@ async def get_openai_reply(
                             # berilmaydi: model veb uchun `site:...` va uzun
                             # raqamli so'rov yozadi, rasm indeksida esa bu
                             # mutlaqo aloqasiz natija beradi.
-                            found = await search_images(image_query(primary_query))
+                            _iq = (args.get("image_query") or "").strip()
+                            found = await search_images(
+                                image_query(_iq or primary_query))
                         except Exception as e:
                             logger.warning(f"[IMAGES] qidiruv xatosi: {e}")
                             found = []

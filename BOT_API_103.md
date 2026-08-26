@@ -229,6 +229,47 @@ internet_search(want_images=true)
    → embed_images()            yuborishdan oldin media blokiga almashtiradi
 ```
 
+### Manba: Wikimedia Commons birinchi, ddgs zaxira
+
+Serverda DuckDuckGo rasm API'si **403** qaytaradi (data-markaz IP'si) va
+`ddgs` jimgina Bing'ga o'tadi. Bing natijalari esa so'rovga mutlaqo
+aloqasiz bo'lib chiqdi: «Hongqi H5 Classic» so'roviga Roblox
+personajlari, keyin fandom saytidagi multfilm fanarti kelgan.
+
+Bing natijalarini filtrlash — yutqaziladigan kurash: tasodifiy moslik
+(«classic» so'zi Roblox sahifasida ham bor) doim topiladi. Shuning uchun
+manba almashtirildi:
+
+1. **Wikimedia Commons API** — IP bo'yicha bloklamaydi, natijalari
+   mavzuga aniq mos, rasmlari erkin litsenziyada (o'quvchi taqdimotiga
+   qo'yish huquqiy jihatdan ham xavfsiz).
+2. **ddgs** — Commons hech narsa topmasa yoki tirik havola qolmasa.
+
+⚠️ Commons SO'ZMA-SO'Z qidiradi: «Hongqi H5 Classic» bo'sh qaytaradi,
+«Hongqi H5» esa o'nlab aniq suratni beradi. Shuning uchun natija
+bo'lmasa so'rov 3 so'zgacha qisqartirilib bir marta qayta so'raladi.
+
+⚠️ `upload.wikimedia.org` havolalari tiriklikka TEKSHIRILMAYDI
+(`_TRUSTED_IMAGE_HOSTS`). Havolani API'ning o'zi qaytargan, ya'ni u
+mavjud. Aksincha, 10 ta so'rovni bir vaqtda yuborish Wikimedia'dan
+**429** oladi va tirik rasmlar "o'lik" deb tashlanardi — 10 nomzoddan
+1 tasi qolardi.
+
+### Rasm so'rovi veb so'rovidan AJRATILGAN
+
+Model veb uchun uzun, operatorli so'rov yozadi
+(`site:weforum.org Future of Jobs Report 2025 ... 170 million`). Rasm
+indeksida `site:` ishlamaydi, raqamlar esa shovqin. Shuning uchun:
+
+- tool'da alohida ixtiyoriy `image_query` maydoni bor (qisqa, inglizcha);
+- berilmasa `image_query()` asosiy so'rovni tozalaydi (operatorlar va
+  yolg'iz raqamlar olib tashlanadi, 8 so'zgacha qisqartiriladi).
+
+Natijalar `_image_relevant()` orqali ham o'tadi: so'rovning ma'noli
+so'zlaridan kamida bittasi rasm sarlavhasi/havolasi/manbasida bo'lishi
+shart. Hech biri o'tmasa rasm QO'YILMAYDI — aloqasiz rasmdan ko'ra
+rasmsiz yaxshiroq, ayniqsa o'quvchi topshiradigan taqdimotda.
+
 ### URL modelga ATAYLAB ko'rsatilmaydi
 
 Ikki sabab: (a) har bir URL 30-60 token, (b) model ularni qayta yozib,

@@ -690,10 +690,21 @@ BTN_LINK = "link"
 # sinovda ochiq-sochiq kontent yaratuvchi so'ralganda mos rasm chiqdi.
 # "on" — eng qattiq daraja. Bo'shatish kerak bo'lsa shu qatorni
 # o'zgartiring, kodning boshqa joyiga tegish shart emas.
+# Wikimedia Commons — rasmlar uchun BIRINCHI manba (services/ai.py).
+# Commons IP bo'yicha bloklamaydi, natijalari mavzuga aniq mos va
+# rasmlari erkin litsenziyada. `User-Agent` MAJBURIY: Wikimedia
+# standart urllib UA'sini rad etadi (403).
+SEARCH_COMMONS_UA = "TramplinBot/1.0 (Telegram bot; https://t.me)"
+SEARCH_COMMONS_TIMEOUT = 12
+
 SEARCH_IMAGE_SAFESEARCH = "on"
 SEARCH_IMAGE_MAX = 4          # bitta javobga ko'pi bilan shuncha rasm
 SEARCH_IMAGE_CANDIDATES = 10  # DDG'dan shuncha olinadi, o'liklari filtrlanadi
-SEARCH_IMAGE_HEAD_TIMEOUT = 4 # har bir URL uchun HEAD tekshiruvi (soniya)
+# 4 soniya YETMAYDI: 10 ta so'rov bir vaqtda ketadi va yangi hostga
+# ulanish + TLS shu chegaraga sig'may qolardi. Commons rasmlari
+# aynan shu tufayli "o'lik" deb tashlanardi (aslida 0.2s da javob
+# beradi).
+SEARCH_IMAGE_HEAD_TIMEOUT = 10
 # Telegram media blokini o'z serveridan tortadi: havola o'lik bo'lsa BUTUN
 # rich xabar rad etiladi. Shuning uchun chegara — Telegram photo limiti.
 SEARCH_IMAGE_MAX_BYTES = 10 * 1024 * 1024
