@@ -80,6 +80,12 @@ except ImportError:
 
 from core.loader import openai_client, logger
 from db.history import update_chat_history
+
+# TPM (daqiqadagi token) limitiga urilganda qancha kutiladi. OpenAI xato
+# matnida odatda "try again in 1-6s" deydi, shuning uchun 6 soniya deyarli
+# har doim yetarli. Bitta qayta urinish — limit haqiqatan to'lgan bo'lsa
+# uzoq kutib o'tirishning ma'nosi yo'q.
+RATE_LIMIT_RETRY_DELAY = 6
 from db.database import (
     get_memories, add_memory, update_memory, delete_memory, clear_memories,
     create_scheduled_task, list_scheduled_tasks, cancel_scheduled_task,
@@ -2610,59 +2616,79 @@ async def get_openai_reply(
 
         candidate_models = [resolved_model] if resolved_model else [initial_model, *MODEL_FALLBACKS]
 
-        try:
-            async with AsyncExitStack() as stack:
-                stream, resolved_model = await _open_response_stream(stack, candidate_models, **call_kwargs)
+        # ⚠️ TPM LIMITI OQIM ICHIDA KELADI. `_open_response_stream` faqat
+        # oqim OCHILAYOTGANDA 429 ni ushlaydi, OpenAI SDK esa so'rovni
+        # birinchi iteratsiyada yuboradi — shuning uchun RateLimitError
+        # o'sha himoyadan chetlab o'tib, javobni butunlay yo'q qilardi
+        # ("try again in 1.074s" deb yozilgan bo'lsa ham). Bir marta kutib
+        # qayta urinamiz; matn allaqachon oqib chiqqan bo'lsa urinmaymiz,
+        # aks holda foydalanuvchi javob boshini IKKI marta ko'rardi.
+        for _urinish in range(2):
+            _matn_ketdi = False
+            try:
+                async with AsyncExitStack() as stack:
+                    stream, resolved_model = await _open_response_stream(stack, candidate_models, **call_kwargs)
 
-                got_function_call = False
-                pending_calls = []
+                    got_function_call = False
+                    pending_calls = []
 
-                async for event in stream:
-                    et = event.type
-                    if et == "response.output_text.delta":
-                        yield event.delta
-                    elif et == "response.output_item.added" and getattr(event.item, "type", None) == "function_call":
-                        got_function_call = True
-                        # Kontent emas — faqat "band" animatsiyasiga signal:
-                        # qidiruv yoki fayl vazifasi (sekundlab davom etadi)
-                        # boshlanmoqda.
-                        _call_name = getattr(event.item, "name", None)
-                        if _call_name == "run_python_sandbox":
-                            if not file_task_started:
-                                yield "[STATUS]file_task"
-                                file_task_started = True
-                        elif _call_name == "generate_image":
-                            if not image_started:
-                                yield "[STATUS]image"
-                                image_started = True
-                        elif _call_name == "manage_reminder":
-                            if not reminder_started:
-                                yield "[STATUS]reminder"
-                                reminder_started = True
-                        elif _call_name == "update_memory":
-                            # ⚠️ Bu shox SHART: usiz chaqiruv pastdagi
-                            # `elif` ga tushib, "Internetdan ma'lumot
-                            # qidirilmoqda" degan YOLG'ON status ko'rsatardi —
-                            # model esa shunchaki ismni saqlayotgan edi.
-                            #
-                            # Javob MATNIDA xotira tilga olinmaydi
-                            # (_MEMORY_TOOL description'idagi qat'iy qoida),
-                            # lekin status animatsiyasi — boshqa narsa: u
-                            # bot odamni eslab qolayotganini bir zumga
-                            # ko'rsatib, javob bilan birga o'chib ketadi.
-                            if not memory_started:
-                                yield "[STATUS]memory"
-                                memory_started = True
-                        elif not search_performed:
-                            yield "[STATUS]search"
-                            search_performed = True
-                    elif et == "response.output_item.done" and getattr(event.item, "type", None) == "function_call":
-                        pending_calls.append(event.item)
+                    async for event in stream:
+                        et = event.type
+                        if et == "response.output_text.delta":
+                            _matn_ketdi = True
+                            yield event.delta
+                        elif et == "response.output_item.added" and getattr(event.item, "type", None) == "function_call":
+                            got_function_call = True
+                            # Kontent emas — faqat "band" animatsiyasiga signal:
+                            # qidiruv yoki fayl vazifasi (sekundlab davom etadi)
+                            # boshlanmoqda.
+                            _call_name = getattr(event.item, "name", None)
+                            if _call_name == "run_python_sandbox":
+                                if not file_task_started:
+                                    yield "[STATUS]file_task"
+                                    file_task_started = True
+                            elif _call_name == "generate_image":
+                                if not image_started:
+                                    yield "[STATUS]image"
+                                    image_started = True
+                            elif _call_name == "manage_reminder":
+                                if not reminder_started:
+                                    yield "[STATUS]reminder"
+                                    reminder_started = True
+                            elif _call_name == "update_memory":
+                                # ⚠️ Bu shox SHART: usiz chaqiruv pastdagi
+                                # `elif` ga tushib, "Internetdan ma'lumot
+                                # qidirilmoqda" degan YOLG'ON status
+                                # ko'rsatardi — model esa shunchaki ismni
+                                # saqlayotgan edi.
+                                #
+                                # Javob MATNIDA xotira tilga olinmaydi
+                                # (_MEMORY_TOOL description'idagi qat'iy
+                                # qoida), lekin status animatsiyasi — boshqa
+                                # narsa: u bot odamni eslab qolayotganini bir
+                                # zumga ko'rsatib, javob bilan birga o'chadi.
+                                if not memory_started:
+                                    yield "[STATUS]memory"
+                                    memory_started = True
+                            elif not search_performed:
+                                yield "[STATUS]search"
+                                search_performed = True
+                        elif et == "response.output_item.done" and getattr(event.item, "type", None) == "function_call":
+                            pending_calls.append(event.item)
 
-                final_response = await stream.get_final_response()
-        except Exception as e:
-            logger.error(f"GPT javob xatosi: {e}")
-            raise
+                    final_response = await stream.get_final_response()
+                break
+            except RateLimitError as e:
+                if _urinish or _matn_ketdi:
+                    logger.error(f"GPT javob xatosi: {e}")
+                    raise
+                logger.warning(
+                    f"TPM limiti — {RATE_LIMIT_RETRY_DELAY}s kutib qayta "
+                    f"urinilmoqda: {e}")
+                await asyncio.sleep(RATE_LIMIT_RETRY_DELAY)
+            except Exception as e:
+                logger.error(f"GPT javob xatosi: {e}")
+                raise
 
         if not got_function_call:
             for _q in (file_quota, image_quota):
@@ -2734,11 +2760,24 @@ async def get_openai_reply(
                         fetch_pages=6 if research else 3,
                         max_queries=4 if research else 3,
                     )
-                    # Rasm — FAQAT model o'zi so'raganda va faqat bir marta.
-                    # Ikkinchi qidiruv raundida qayta chaqirilsa katalog
-                    # raqamlari siljib ketardi (model birinchi ro'yxatga
-                    # qarab [rasm:2] yozib qo'ygan bo'lishi mumkin).
-                    if (args.get("want_images") and images_out is not None
+                    # Rasm FAQAT bir marta qidiriladi: ikkinchi raundda
+                    # ro'yxat almashsa, model birinchi ro'yxatga qarab
+                    # yozgan [rasm:2] boshqa rasmga tegib ketardi.
+                    #
+                    # ⚠️ LEKIN katalog QAYTA KO'RSATILADI. Ilgari ikkinchi
+                    # `want_images=true` chaqiruvi jimgina rasmsiz qaytardi;
+                    # model buni "rasm topilmadi" deb tushunib qidiruvni
+                    # yana takrorlardi. Har bir takror butun sahifa matnini
+                    # kontekstga qo'shadi — uch raunddan keyin so'rov 79 ming
+                    # tokenga yetib, OpenAI TPM limitiga urilardi va 50
+                    # soniya ishlangan javob BUTUNLAY yo'qolardi.
+                    if args.get("want_images") and images_out:
+                        tool_output += (
+                            format_image_catalog(images_out)
+                            + "\n⚠️ Bu — shu javobdagi BARCHA rasmlar. "
+                              "Rasm uchun qayta qidirmang.\n"
+                        )
+                    elif (args.get("want_images") and images_out is not None
                             and not images_out):
                         try:
                             # ⚠️ VEB so'rovi RASM qidiruviga to'g'ridan-to'g'ri

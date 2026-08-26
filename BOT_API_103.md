@@ -499,6 +499,45 @@ tekshiradigan narsa esa aynan sana va raqamlar.
 
 ## 9. Ishonchlilik tuzatishlari
 
+### Jim qaytgan tool → kontekst portlashi → TPM limiti
+
+Railway logi (Chevrolet Malibu so'rovi):
+
+```
+[SEARCH] ... images=True round=1   -> [IMAGES] Commons 10 ta berdi
+[SEARCH] ... images=True round=2   -> (hech narsa)
+[SEARCH] ... images=True round=3   -> (hech narsa)
+ERROR: Rate limit reached ... Requested 79025 ... TPM Limit 200000
+```
+
+Rasm ataylab **bir marta** qidiriladi: ro'yxat almashsa, model
+allaqachon yozib qo'ygan `[rasm:2]` butunlay boshqa rasmga tegib
+ketardi. Lekin ikkinchi `want_images=true` chaqiruvi **jimgina** rasmsiz
+qaytardi. Model buni "rasm topilmadi" deb tushunib qidiruvni
+takrorlardi, har bir takror esa uchta sahifaning to'liq matnini
+kontekstga qo'shardi. Uchinchi raundda so'rov 79 ming tokenga yetib
+OpenAI TPM chegarasiga urilardi va 50 soniya ishlangan javob
+**butunlay yo'qolardi**.
+
+Tuzatish: takroriy chaqiruvda **o'sha katalog qayta ko'rsatiladi** va
+"bu — barcha rasmlar, qayta qidirmang" deb aytiladi. Umumiy qoida:
+byudjet tugab tool o'chirilsa, buni tool NATIJASIDA aytish kerak —
+jimgina bo'sh qaytarish modelni takrorga undaydi.
+
+### `RateLimitError` oqim ICHIDA keladi
+
+`_open_response_stream()` 404 va 429 da zaxira modelga o'tadi, lekin bu
+faqat oqim OCHILAYOTGANDA ishlaydi. OpenAI SDK so'rovni **birinchi
+iteratsiyada** yuboradi, shuning uchun TPM xatosi o'sha himoyadan
+chetlab o'tib, javobni butunlay yo'q qilardi — OpenAI xato matnida
+"try again in 1.074s" deb yozgan bo'lsa ham.
+
+Endi raund `RATE_LIMIT_RETRY_DELAY` (6s) kutib **bir marta** qayta
+uriniladi. Shart: hali birorta matn bo'lagi chiqmagan bo'lsin — aks
+holda foydalanuvchi javob boshini ikki marta ko'rardi.
+
+Tekshiruvlar: `tests/test_search_images_loop.py` (6 ta).
+
 ### Rad etilgan ≠ javob kelmagan
 
 `_telegram_api_request` `outcome` chiqish parametri orqali **sababni**
