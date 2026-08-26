@@ -244,6 +244,25 @@ MAX_MESSAGE_CHARS = 4000
 RICH_MEDIA_TIMEOUT = 60.0
 
 
+_MD_LINK_RE = re.compile(r"\[[^\]\n]*\]\([^)\s]*\)?")
+
+
+def _safe_cut(window: str, cut: int) -> int:
+    """Kesish nuqtasini markdown havolasining O'RTASIDAN chiqaradi.
+
+    Jonli nosozlik: manbalar ro'yxati aynan `[OLX Uzbekistan](https://...)`
+    ning ichida bo'lingan va foydalanuvchi bitta xabarda `• [OLX`, keyingi
+    xabarda `Uzbekistan](https://...)` degan buzuq matnni ko'rgan.
+    Havola ikkiga bo'linsa, ikkala bo'lakda ham u havola bo'lmay qoladi.
+    """
+    for m in _MD_LINK_RE.finditer(window):
+        if m.start() < cut < m.end():
+            # Havoladan OLDIN kesamiz; joy qolmasa — o'zgartirmaymiz
+            # (uzun havola bitta bo'lakka sig'masligi mumkin).
+            return m.start() if m.start() > len(window) // 4 else cut
+    return cut
+
+
 def _split_for_telegram(text: str, limit: int = MAX_MESSAGE_CHARS) -> list[str]:
     """Uzun javobni Telegram chegarasiga sig'adigan bo'laklarga bo'ladi.
 
@@ -265,6 +284,7 @@ def _split_for_telegram(text: str, limit: int = MAX_MESSAGE_CHARS) -> list[str]:
         cut = max(window.rfind("\n\n"), window.rfind("\n"), window.rfind(" "))
         if cut < limit // 2:          # mos chegara yo'q — qattiq kesamiz
             cut = limit
+        cut = _safe_cut(window, cut)
         parts.append(rest[:cut].rstrip())
         rest = rest[cut:].lstrip()
     if rest:

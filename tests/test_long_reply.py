@@ -215,7 +215,22 @@ async def _checks(LIMIT):
         f"yarim qolgan kutish xabari o'chirilmadi: {m.bot.deleted}")
     print("[10] osilib qolgan kutish xabari o'chirildi OK")
 
-    print("\nlong_reply: barcha tekshiruvlar o'tdi (10/10).")
+    # ═══════════════════════════════════════════════════════════════
+    # 11) MARKDOWN HAVOLASI BO'LAKLAR ORASIDA BUZILMAYDI
+    #
+    # Jonli nosozlik: manbalar ro'yxati aynan havola ichida bo'lingan va
+    # foydalanuvchi bitta xabarda «• [OLX», keyingisida
+    # «Uzbekistan](https://...)» degan buzuq matnni ko'rgan.
+    # ═══════════════════════════════════════════════════════════════
+    havola = "[OLX Uzbekistan](https://www.olx.uz/d/obyavlenie/h5-ID4lE3l.html)"
+    uzun = "x" * (LIMIT - 40) + " " + havola + " oxirgi so'z"
+    bolaklar = m._split_for_telegram(uzun)
+    assert len(bolaklar) == 2, len(bolaklar)
+    assert any(havola in b for b in bolaklar), (
+        f"havola ikkiga bo'lingan: {[b[-60:] for b in bolaklar]}")
+    print("[11] markdown havolasi bo'laklar orasida buzilmadi OK")
+
+    print("\nlong_reply: barcha tekshiruvlar o'tdi (11/11).")
 
 
 if __name__ == "__main__":

@@ -511,6 +511,55 @@ def _ddg_images_sync(query: str, max_results: int) -> List[dict]:
         return []
 
 
+# Rasm qidiruvida hech narsa ajratmaydigan so'zlar.
+_IMG_STOPWORDS = {
+    "photo", "photos", "image", "images", "picture", "pictures", "wallpaper",
+    "high", "quality", "professional", "modern", "concept", "illustration",
+    "background", "design", "view", "best", "free", "stock", "with", "and",
+    "the", "for", "from", "rasm", "rasmi", "surat", "foto",
+}
+
+
+def _query_tokens(query: str) -> List[str]:
+    """So'rovdan ma'noli so'zlarni ajratadi (operatorlar va raqamlarsiz)."""
+    q = re.sub(r"\b\w+:\S+", " ", query or "")        # site:, filetype:, http:
+    q = re.sub(r"[^\w\s]", " ", q, flags=re.UNICODE)
+    return [w for w in q.lower().split()
+            if len(w) >= 4 and not w.isdigit() and w not in _IMG_STOPWORDS]
+
+
+def _image_relevant(tokens: List[str], cand: dict) -> bool:
+    """Nomzad so'rovga umuman aloqadormi.
+
+    ⚠️ NEGA KERAK: serverda DuckDuckGo rasm API'si 403 qaytaradi (data-markaz
+    IP'si) va `ddgs` Bing'ga o'tadi — uning natijalari esa ba'zan so'rovga
+    MUTLAQO aloqasiz bo'ladi. Foydalanuvchi «Hongqi H5 Classic rasmini
+    yubor» deb so'rab, fandom saytidagi multfilm fanartini olgan; taqdimot
+    esa mavzuga aloqasiz suratlar bilan chiqqan.
+    Aloqasiz rasmdan ko'ra RASMSIZ yaxshiroq — ayniqsa o'quvchi
+    o'qituvchiga topshiradigan taqdimotda.
+    """
+    if not tokens:
+        return True                    # tekshirishga asos yo'q
+    matn = " ".join((cand.get(k) or "") for k in
+                    ("title", "url", "image", "source")).lower()
+    return any(t in matn for t in tokens)
+
+
+def image_query(text: str) -> str:
+    """Veb-qidiruv so'rovini RASM qidiruvi uchun tozalaydi.
+
+    Model veb uchun uzun, operatorli so'rov yozadi — masalan
+    `site:weforum.org Future of Jobs Report 2025 AI jobs 170 million`.
+    Rasm qidiruvida bunday so'rov aloqasiz natija beradi: `site:` filtri
+    rasm indeksida ishlamaydi, raqamlar esa shovqin qo'shadi.
+    """
+    q = re.sub(r"\b\w+:\S+", " ", text or "")
+    q = re.sub(r"[\"'()\[\]]", " ", q)
+    q = re.sub(r"\b\d[\d.,]*\b", " ", q)      # yolg'iz raqamlar (M5 saqlanadi)
+    return " ".join(q.split()[:8])
+
+
 async def search_images(query: str, *, limit: int = SEARCH_IMAGE_MAX) -> List[dict]:
     """Internetdan rasm qidiradi va FAQAT tirik havolalarni qaytaradi.
 
@@ -524,11 +573,16 @@ async def search_images(query: str, *, limit: int = SEARCH_IMAGE_MAX) -> List[di
     # Nomzodlarni tozalash: takrorlar va https bo'lmagan havolalar chiqib
     # ketadi. http ham Telegram uchun ruxsat etilgan, lekin ko'p sayt uni
     # 301 bilan https'ga uloqtiradi — tekshiruvni bekorga uzaytiradi.
+    tokens = _query_tokens(query)
     seen: set = set()
     candidates: List[dict] = []
+    tashlandi = 0
     for r in raw:
         url = (r.get("image") or "").strip()
         if not url.startswith("https://") or url in seen:
+            continue
+        if not _image_relevant(tokens, r):
+            tashlandi += 1
             continue
         seen.add(url)
         candidates.append({
@@ -549,7 +603,8 @@ async def search_images(query: str, *, limit: int = SEARCH_IMAGE_MAX) -> List[di
         )
 
     alive = [c for c, ok in zip(candidates, checks) if ok is True]
-    logger.info(f"[IMAGES] «{query}»: {len(candidates)} nomzod → {len(alive)} tirik")
+    logger.info(f"[IMAGES] «{query}»: {len(candidates)} nomzod → {len(alive)} tirik"
+                f"{f', {tashlandi} ta aloqasiz tashlandi' if tashlandi else ''}")
     return alive[:limit]
 
 
@@ -708,9 +763,13 @@ async def _download_capped(session: aiohttp.ClientSession, url: str) -> Optional
 async def _one_image(session: aiohttp.ClientSession, query: str) -> tuple:
     """Bitta so'rov uchun ishlaydigan rasm topadi. -> (baytlar|None, manba)."""
     candidates = await asyncio.to_thread(_ddg_images_sync, query, FILE_IMAGE_CANDIDATES)
+    tokens = _query_tokens(query)
     for c in candidates:
         url = (c.get("image") or "").strip()
         if not url.startswith(("http://", "https://")):
+            continue
+        # Mavzuga aloqasiz rasm slaydga tushmasin — bo'sh slayd yaxshiroq.
+        if not _image_relevant(tokens, c):
             continue
         raw = await _download_capped(session, url)
         if not raw:
@@ -2530,7 +2589,11 @@ async def get_openai_reply(
                     if (args.get("want_images") and images_out is not None
                             and not images_out):
                         try:
-                            found = await search_images(primary_query)
+                            # ⚠️ VEB so'rovi RASM qidiruviga to'g'ridan-to'g'ri
+                            # berilmaydi: model veb uchun `site:...` va uzun
+                            # raqamli so'rov yozadi, rasm indeksida esa bu
+                            # mutlaqo aloqasiz natija beradi.
+                            found = await search_images(image_query(primary_query))
                         except Exception as e:
                             logger.warning(f"[IMAGES] qidiruv xatosi: {e}")
                             found = []

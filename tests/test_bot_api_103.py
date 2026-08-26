@@ -20,6 +20,7 @@ from handlers import messages as msg
 from handlers import pro as pro_module
 from handlers import digest as digest_module
 from handlers.helpers import make_retry_keyboard
+import services.ai as ai_module
 from services.ai import (
     build_rich_markdown, embed_images, strip_image_tokens,
     format_image_catalog, _content_size,
@@ -133,6 +134,27 @@ check(13, "rasm topilmasa belgilar matnda qolmaydi",
 catalog = format_image_catalog(imgs)
 check(14, "katalogda URL YO'Q (token tejash)",
       "https://" not in catalog and "[rasm:1]" in catalog and "[rasm:2]" in catalog)
+
+# 14a-14c) RASM QIDIRUVI SO'ROVGA MOS BO'LSIN.
+# Jonli nosozlik: serverda DuckDuckGo rasm API'si 403 qaytaradi va ddgs
+# Bing'ga o'tadi — natijalar esa so'rovga MUTLAQO aloqasiz bo'lishi mumkin.
+# «Hongqi H5 Classic rasmini yubor» so'roviga fandom saytidagi multfilm
+# fanarti kelgan, taqdimotga esa mavzuga aloqasiz suratlar tushgan.
+check("14a", "veb so'rovi rasm qidiruvi uchun tozalanadi",
+      ai_module.image_query(
+          "site:weforum.org Future of Jobs Report 2025 AI jobs 170 million"
+      ) == "Future of Jobs Report AI jobs million")
+
+_tok = ai_module._query_tokens("Hongqi H5 Classic")
+check("14b", "mos rasm o'tadi",
+      ai_module._image_relevant(_tok, {
+          "title": "2022 Hongqi H5 Classic Walkaround",
+          "url": "https://i.ytimg.com/x.jpg", "source": "youtube.com"}))
+check("14c", "aloqasiz rasm TASHLANADI (rasmsiz — aloqasizdan yaxshiroq)",
+      not ai_module._image_relevant(_tok, {
+          "title": "Here's the Neverseen Fanart Version",
+          "url": "https://lost-cities-keeper.fandom.com/a.png",
+          "source": "fandom.com"}))
 
 check(15, "Content-Range'dan haqiqiy hajm o'qiladi",
       _content_size({"Content-Range": "bytes 0-0/123456", "Content-Length": "1"}) == 123456
