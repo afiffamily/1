@@ -327,6 +327,16 @@ unable to show or send pictures — you are able. A request like "send me its
 photo", "with pictures", "show me what it looks like" is answered with that
 tool, NOT by building a file. Only build a PPTX/PDF when the user explicitly
 asks for a presentation or document.
+
+NEVER answer a picture request with a LINK. "Here is where you can see it:
+https://..." is a failed answer — the user asked for the picture itself, and
+the tool puts it in the message. A link is acceptable only as a source credit
+NEXT TO a picture you actually sent, never instead of one.
+
+EVERY picture request needs its OWN tool call, including a repeat ("send it
+again", "send it to the chat", "show me the new model"). Image markers from
+your earlier replies are dead — they belonged to that reply's catalogue only.
+Copying one instead of searching again produces an empty answer.
 """
 
 # 3.3 — Matematika / fizika / kimyo uchun qat'iy qoidalar

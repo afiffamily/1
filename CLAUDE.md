@@ -32,6 +32,8 @@ Deploys must name the commit explicitly via the Railway GraphQL API:
 
 ## Architecture
 
+`BOT_API_103.md` is the long-form companion to this file: everything added with Bot API 10.3 and after, explained in full — including the decisions that were **tried and reverted** (the interim "preparing your file" message, the sources slide). Read it before re-attempting anything in that area; this file only carries the rules.
+
 ### Handler registration order is a safety constraint
 
 `main.py` registers handlers in a deliberate order and each position is justified in a comment. The critical ones:
@@ -76,6 +78,14 @@ A photo in a **chat reply** and a photo **inside a document** share nothing but 
 
 The routing between them is prompt-level and fragile: adding the word "rasm" to the file tool's description was enough to make *every* request ("olma haqida ma'lumot ber") turn into a file task. Both tool descriptions now carry an explicit ⛔️ pointing at the other one, and `IMAGE_CAPABILITY_NOTE` in the system prompt exists because the model would otherwise answer "I can't send pictures" without calling any tool at all. That note is added **only** in `get_openai_reply` — `get_vision_reply` has no search tool, so promising it there would be a lie.
 
+**Wikimedia Commons is the primary image source, `ddgs` only the fallback**, and `search_images()` tries each source *separately* — Commons returning hits is not enough, its links must also survive. On the server DuckDuckGo's image endpoint answers `403` (datacenter IP) and `ddgs` silently switches to Bing, whose results were not merely worse but unrelated: a "Hongqi H5 Classic" request returned Roblox avatars. Filtering Bing is unwinnable — a generic word like "classic" always matches something — which is why the source moved rather than the filter tightening. Commons also never IP-blocks and its images are freely licensed, which matters for the student presentations this bot is used for.
+
+Two things about Commons are load-bearing. It matches *literally*, so "Hongqi H5 Classic" returns nothing while "Hongqi H5" returns dozens — `_images_sync()` walks the query down to 3 words, then to 2. Both steps are needed: "Hongqi H5 new model" trimmed to 3 is still "Hongqi H5 new", which also returns nothing, and the user simply gets no picture. And `upload.wikimedia.org` is in `_TRUSTED_IMAGE_HOSTS`, so its URLs skip the liveness probe entirely: the API already guarantees they exist, while ten parallel probes earn a `429` that made live images look dead (10 candidates collapsed to 1).
+
+The query itself is separated too. A web query is written for articles (`site:`, long phrases, figures) and is useless against an image index, so `internet_search` takes an optional short English `image_query`, and `image_query()` strips operators and bare numbers from the fallback — but **not four-digit years**: "Hongqi H5 2025" and "Hongqi H5" are different cars, and dropping the year is how a request for the new model kept returning the same old photo. `_image_relevant()` then requires one meaningful query word in the title/URL/source — when nothing matches, **no image is sent at all**, because an unrelated photo on a slide is worse than an empty one.
+
+`[rasm:N]` is valid **only inside the reply that produced the catalogue**, so `safe_update_history()` strips image tokens before anything reaches `chat_messages`. A token left in history reads to the model as still-live: on "rasm yubor" it would re-emit `[rasm:1]` instead of calling the tool, `embed_images()` would silently drop it, and the user got an empty answer — or, compensating, a bare link. Both the catalogue text and `IMAGE_CAPABILITY_NOTE` now say outright that a link never substitutes for a picture and that every repeat request needs its own search.
+
 Image search runs with `safesearch="on"` (`SEARCH_IMAGE_SAFESEARCH`); the library default `moderate` was not enough for a bot with no age gate.
 
 ### A failed send is not the same as a rejected send
@@ -83,6 +93,10 @@ Image search runs with `safesearch="on"` (`SEARCH_IMAGE_SAFESEARCH`); the librar
 `_telegram_api_request` reports *why* a call failed through an `outcome` out-param: `OUTCOME_REJECTED` (Telegram answered `ok:false`) versus `OUTCOME_UNKNOWN` (timeout, connection reset). The rich-message fallback ladder retries in a plainer form **only** on REJECTED. On UNKNOWN it gives up silently, because the message may well have arrived.
 
 This exists because the shared aiohttp session caps every call at 10s — right for the 0.6s draft pings it was tuned for, wrong for a rich message carrying image URLs, since Telegram fetches each image from the source site before it creates the message. The client timed out, the ladder concluded "rejected", re-sent without images, and Telegram delivered both: users saw the same answer twice, once with photos and once without. Media sends now get `RICH_MEDIA_TIMEOUT` instead.
+
+### Splitting a long answer must not cut a construct in half
+
+`_split_for_telegram()` breaks answers at `MAX_MESSAGE_CHARS`, and the cut point lands wherever the last newline or space happens to be. Two constructs cannot survive that cut and are handled explicitly: an open code fence is closed and reopened with its language on the next part, and `_safe_cut()` moves the boundary *before* a markdown link. Splitting `[OLX Uzbekistan](https://…)` in the middle leaves both halves as literal text — that is how a sources list once reached a user as `• [OLX` followed by `Uzbekistan](https://…)`. Anything else added to answers with paired syntax needs the same treatment.
 
 ### Prompt caching constrains where text goes
 

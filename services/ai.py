@@ -99,6 +99,15 @@ async def clear_chat_history(chat_id: int):
 async def safe_update_history(chat_id: int, content: str, role: str = "user"):
     if not content:
         return
+    # ⚠️ [rasm:N] TARIXGA TUSHMASLIGI KERAK. Bu belgi faqat O'SHA javobdagi
+    # rasm katalogiga tegishli — keyingi so'rovda katalog yo'q. Belgi tarixda
+    # qolsa model uni tirik deb o'ylab, "rasm yubor" deganda qidiruvni
+    # CHAQIRMAY yana [rasm:1] yozardi; embed_images() esa uni indamay
+    # o'chirardi. Natija: foydalanuvchi rasm o'rniga bo'sh javob yoki
+    # havola olardi.
+    content = strip_image_tokens(content).strip()
+    if not content:
+        return
     try:
         await update_chat_history(chat_id, content, role=role)
     except Exception as e:
@@ -573,7 +582,11 @@ def image_query(text: str) -> str:
     """
     q = re.sub(r"\b\w+:\S+", " ", text or "")
     q = re.sub(r"[\"'()\[\]]", " ", q)
-    q = re.sub(r"\b\d[\d.,]*\b", " ", q)      # yolg'iz raqamlar (M5 saqlanadi)
+    # Yolg'iz raqamlar tashlanadi (M5 saqlanadi), lekin YIL saqlanadi:
+    # «Hongqi H5 2025» va «Hongqi H5» butunlay boshqa suratlar, foydalanuvchi
+    # esa aynan yangi modelni so'ragan bo'lishi mumkin. Topilmasa _images_sync
+    # baribir qisqartirib qayta so'raydi.
+    q = re.sub(r"\b(?!(?:1[89]|20)\d{2}\b)\d[\d.,]*\b", " ", q)
     return " ".join(q.split()[:8])
 
 
@@ -638,12 +651,21 @@ def _images_sync(query: str, max_results: int) -> List[dict]:
 
     ⚠️ Commons SO'ZMA-SO'Z qidiradi: «Hongqi H5 Classic» hech narsa
     bermaydi, «Hongqi H5» esa o'nlab aniq suratni beradi. Shuning uchun
-    natija bo'lmasa so'rov qisqartirilib bir marta qayta so'raladi —
-    odatda oxirgi so'z bezak bo'ladi ("classic", "2024", "narxi").
+    natija bo'lmasa so'rov bosqichma-bosqich qisqaradi — bezak so'zlar
+    ("classic", "new model", "2025", "narxi") oxirida turadi.
+
+    ⚠️ IKKI BOSQICH SHART, bitta emas. Ilgari faqat 3 so'zga qisqartirilardi
+    va «Hongqi H5 new model» -> «Hongqi H5 new» ham bo'sh qaytardi: nom ikki
+    so'zdan iborat bo'lganda uchinchi so'z baribir ortiqcha edi —
+    foydalanuvchi uchun bu "rasm umuman kelmadi" bo'lib ko'rinardi.
     """
-    for q in (query, " ".join(query.split()[:3])):
-        if not q or (q != query and len(query.split()) <= 3):
-            break
+    words = query.split()
+    korilgan: set = set()
+    for n in (len(words), 3, 2):
+        q = " ".join(words[:n])
+        if not q or q in korilgan:
+            continue
+        korilgan.add(q)
         found = _commons_images_sync(q, max_results)
         if found:
             logger.info(f"[IMAGES] «{q}»: Commons {len(found)} ta berdi")
@@ -731,13 +753,18 @@ def format_image_catalog(images: List[dict]) -> str:
     lines = [f"[rasm:{i}] {img['title'][:70] or 'rasm'}"
              for i, img in enumerate(images, 1)]
     return (
-        "\n\n📷 RASMLAR TOPILDI — javob matnida ISHLATISH IXTIYORIY:\n"
+        "\n\n📷 RASMLAR TOPILDI — javobga QO'YING:\n"
         + "\n".join(lines)
         + "\n\nQOIDA: kerakli joyga AYNAN shu belgini yozing — [rasm:1]. "
           "Bir nechta rasmni birga ko'rsatmoqchi bo'lsangiz [rasmlar] deb "
-          "yozing (hammasi bitta galereyaga yig'iladi). URL yozmang — "
-          "havolalarni tizim o'zi qo'yadi. Mavzuga mos kelmasa umuman "
-          "ishlatmang, bu majburiy emas.\n"
+          "yozing (hammasi bitta galereyaga yig'iladi).\n"
+          "⛔️ URL YOZMANG va «rasmni bu yerdan ko'ring» qabilidagi HAVOLA "
+          "BERMANG — rasm foydalanuvchiga aynan shu belgi orqali yetadi, "
+          "havola uning o'rnini bosmaydi. Rasm so'ralgan bo'lsa javobda "
+          "kamida bitta belgi bo'lishi SHART.\n"
+          "⛔️ Belgi FAQAT shu javob uchun amal qiladi — keyingi so'rovda "
+          "ro'yxat yangidan tuziladi. Eski javobdagi raqamni ko'chirmang, "
+          "qidiruvni QAYTA chaqiring.\n"
     )
 
 

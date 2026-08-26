@@ -140,10 +140,10 @@ check(14, "katalogda URL YO'Q (token tejash)",
 # Bing'ga o'tadi — natijalar esa so'rovga MUTLAQO aloqasiz bo'lishi mumkin.
 # «Hongqi H5 Classic rasmini yubor» so'roviga fandom saytidagi multfilm
 # fanarti kelgan, taqdimotga esa mavzuga aloqasiz suratlar tushgan.
-check("14a", "veb so'rovi rasm qidiruvi uchun tozalanadi",
+check("14a", "veb so'rovi rasm qidiruvi uchun tozalanadi (YIL saqlanadi)",
       ai_module.image_query(
           "site:weforum.org Future of Jobs Report 2025 AI jobs 170 million"
-      ) == "Future of Jobs Report AI jobs million")
+      ) == "Future of Jobs Report 2025 AI jobs million")
 
 _tok = ai_module._query_tokens("Hongqi H5 Classic")
 check("14b", "mos rasm o'tadi",
@@ -155,6 +155,63 @@ check("14c", "aloqasiz rasm TASHLANADI (rasmsiz — aloqasizdan yaxshiroq)",
           "title": "Here's the Neverseen Fanart Version",
           "url": "https://lost-cities-keeper.fandom.com/a.png",
           "source": "fandom.com"}))
+
+# 14d-14f) TAKRORIY RASM SO'ROVI ISHLASHI KERAK.
+# Jonli nosozlik: "rasm yubor" -> keldi; "yana yubor" / "yangi modelini
+# ko'rsat" -> rasm o'rniga havola yoki hech narsa. Uch sabab bor edi.
+#
+# 14d — [rasm:N] TARIXGA yozilardi. Keyingi so'rovda katalog yo'q, model esa
+#       belgini tirik deb o'ylab qidiruvni chaqirmay yana [rasm:1] yozardi;
+#       embed_images() uni indamay o'chirardi -> bo'sh javob.
+_yozilgan: list = []
+
+
+async def _fake_update(chat_id, content, role="user"):
+    _yozilgan.append((role, content))
+
+
+_asl_update = ai_module.update_chat_history
+ai_module.update_chat_history = _fake_update
+try:
+    asyncio.run(ai_module.safe_update_history(
+        1, "Mana Hongqi H5 [rasm:1] va yana [rasmlar]", role="assistant"))
+    asyncio.run(ai_module.safe_update_history(1, "[rasm:1]", role="assistant"))
+finally:
+    ai_module.update_chat_history = _asl_update
+
+check("14d", "[rasm:N] tarixga TUSHMAYDI",
+      len(_yozilgan) == 1
+      and "[rasm:" not in _yozilgan[0][1]
+      and "[rasmlar]" not in _yozilgan[0][1]
+      and "Hongqi H5" in _yozilgan[0][1])
+
+# 14e — Commons SO'ZMA-SO'Z qidiradi. Ilgari faqat 3 so'zga qisqartirilardi,
+#       ya'ni «Hongqi H5 new model» -> «Hongqi H5 new» — bu ham bo'sh
+#       qaytardi va foydalanuvchi rasmsiz qolardi. Endi 2 so'zgacha tushadi.
+_sorovlar: list = []
+
+
+def _fake_commons(q, n):
+    _sorovlar.append(q)
+    return [{"url": "https://upload.wikimedia.org/a.jpg",
+             "title": q, "source": "commons"}] if len(q.split()) == 2 else []
+
+
+_asl_commons = ai_module._commons_images_sync
+ai_module._commons_images_sync = _fake_commons
+try:
+    _natija = ai_module._images_sync("Hongqi H5 new model", 4)
+finally:
+    ai_module._commons_images_sync = _asl_commons
+
+check("14e", "topilmasa so'rov 3, keyin 2 so'zga qisqaradi",
+      _sorovlar == ["Hongqi H5 new model", "Hongqi H5 new", "Hongqi H5"]
+      and len(_natija) == 1)
+
+# 14f — model rasm o'rniga HAVOLA berardi. Katalog buni aniq taqiqlaydi.
+check("14f", "katalog havola berishni taqiqlaydi va belgi bir martaligini aytadi",
+      "URL YOZMANG" in catalog and "HAVOLA" in catalog
+      and "FAQAT shu javob uchun" in catalog)
 
 check(15, "Content-Range'dan haqiqiy hajm o'qiladi",
       _content_size({"Content-Range": "bytes 0-0/123456", "Content-Length": "1"}) == 123456

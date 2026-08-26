@@ -265,6 +265,35 @@ indeksida `site:` ishlamaydi, raqamlar esa shovqin. Shuning uchun:
 - berilmasa `image_query()` asosiy so'rovni tozalaydi (operatorlar va
   yolg'iz raqamlar olib tashlanadi, 8 so'zgacha qisqartiriladi).
 
+**YIL saqlanadi.** Dastlab har qanday raqam tashlanardi va
+«Hongqi H5 2025» -> «Hongqi H5» bo'lib qolardi: foydalanuvchi yangi
+modelni so'raganda ham har safar aynan o'sha eski surat kelardi.
+Endi to'rt xonali yil (1800-2099) qoladi, qolgan raqamlar tashlanadi.
+
+### Takroriy rasm so'rovi (jonli nosozlik)
+
+"Rasm yubor" ishlagan, lekin "yana yubor" / "yangi modelini ko'rsat"
+deganda bot rasm o'rniga havola berardi yoki umuman hech narsa
+bermasdi. Uch sabab bir vaqtda ishlagan:
+
+1. **`[rasm:N]` tarixga yozilardi.** Belgi faqat o'sha javobdagi
+   katalogga tegishli, keyingi so'rovda katalog yo'q. Model uni tirik
+   deb o'ylab qidiruvni CHAQIRMAY yana `[rasm:1]` yozardi,
+   `embed_images()` esa uni indamay o'chirardi — javob bo'sh chiqardi.
+   Endi `safe_update_history()` belgilarni yozishdan oldin tozalaydi;
+   bu yagona choke point, shuning uchun barcha handler'lar qamrab
+   olinadi.
+2. **Commons so'rovi bir marta qisqarardi.** 3 so'zgacha — ya'ni
+   «Hongqi H5 new model» -> «Hongqi H5 new», bu ham bo'sh natija.
+   `_images_sync()` endi 3, keyin 2 so'zgacha tushadi.
+3. **Katalog rasmni "ixtiyoriy" deb ko'rsatardi.** Model esa
+   `want_images=true` ni O'ZI tanlagan bo'ladi. Matn qat'iylashtirildi:
+   URL yozish va "shu yerdan ko'ring" qabilidagi havola berish aniq
+   taqiqlandi, `IMAGE_CAPABILITY_NOTE` ga esa har bir takroriy so'rov
+   O'Z qidiruvini talab qilishi qo'shildi.
+
+Tekshiruvlar: `tests/test_bot_api_103.py` — 14a, 14d, 14e, 14f.
+
 Natijalar `_image_relevant()` orqali ham o'tadi: so'rovning ma'noli
 so'zlaridan kamida bittasi rasm sarlavhasi/havolasi/manbasida bo'lishi
 shart. Hech biri o'tmasa rasm QO'YILMAYDI — aloqasiz rasmdan ko'ra
