@@ -64,8 +64,14 @@ GPT_FREQUENCY_PENALTY: float = 0.3
 GPT_PRESENCE_PENALTY: float = 0.3
 
 GPT_MAX_TOKENS: int = MAX_OUTPUT_TOKENS
-CONTEXT_WINDOW: int = 50
-CONTEXT_WINDOW_PRO: int = 150
+# ⚠️ BU IKKI RAQAM — KUNLIK TOKEN SARFINING ENG KATTA QISMI. Tarix HAR
+# BIR so'rovda to'liq qayta yuboriladi, tool loop esa bitta savolni 3-4
+# so'rovga aylantiradi — ya'ni har bir qo'shimcha xabar kuniga minglab
+# marta hisoblanadi. 50/150 da o'rtacha so'rov ~51 ming tokenga chiqqan
+# edi (110 so'rovga 5.67 mln). Kamaytirish tarixni O'CHIRMAYDI, faqat
+# kamrog'i O'QILADI.
+CONTEXT_WINDOW: int = 30
+CONTEXT_WINDOW_PRO: int = 80
 REQUEST_TIMEOUT: float = 180.0   # soniya
 STREAMING_ENABLED: bool = True   # Telegram'da "yozmoqda..." tabiiy ko'rinadi
 SYSTEM_PROMPT_TEMPLATE: str = """
